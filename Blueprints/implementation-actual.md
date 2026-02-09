@@ -1928,3 +1928,24 @@ grep "loadConfigWithWarning" src/commands/init.js
   - Scopes: `RESTlets`, `REST Web Services`
 - Documented alias-based credential model and setup prompts.
 - Updated command surface and active file map for coding agents.
+
+### Atomic Task 12: Update README Install Recommendation for npm Publish âœ…
+
+**Date Completed:** 2026-02-09
+
+**What was built:**
+- Updated `README.md` install section to recommend:
+  - `npm i -g ns-gm`
+- Kept source development instructions as secondary path:
+  - `npm install`
+  - `npm link`
+
+### Atomic Task 13: Bump Package Version for npm Publish âœ…
+
+**Date Completed:** 2026-02-09
+
+**What was built:**
+- Detected published npm version `ns-gm@1.0.3`.
+- Bumped local package version to `1.0.4` using:
+  - `npm version patch --no-git-tag-version`
+- Updated `package.json` and `package-lock.json` for publishable release version.

@@ -1,18 +1,24 @@
-# ns-gm
+# ns-gm (NetSuite God Mode CLI)
 
-NetSuite CLI for running SuiteScript snippets and fetching logs through a local proxy + RESTlet.
+NetSuite CLI for running SuiteScript snippets, files and fetching logs through a local proxy + RESTlet.
 
 ## Install
 
 ```bash
-npm install
-npm link
+npm i -g ns-gm
 ```
 
 Then use:
 
 ```bash
 ns-gm --help
+```
+
+For local development from source:
+
+```bash
+npm install
+npm link
 ```
 
 ## NetSuite Setup (OAuth 2.0 M2M)
@@ -44,7 +50,7 @@ After saving, copy:
 Generate keypair (PowerShell example):
 
 ```powershell
-$dir = "C:\Users\simos\Documents\ns-gm-certs"
+$dir = "C:\Users\user\Documents\ns-gm-certs"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 openssl req -new -x509 -nodes -days 365 -newkey rsa:4096 -keyout "$dir\private_key.pem" -out "$dir\public_key.pem" -subj "/CN=ns-gm-oauth"
 ```
@@ -74,7 +80,7 @@ Setup is alias-based. It lets you pick an existing alias or create `new`.
 - `accountId`: `1234567_SB1`
 - `clientId`: `6f8d...` (OAuth 2.0 Client ID from integration record)
 - `certificateId`: `custcertificate_oauth2_prod` (kid from M2M mapping)
-- `privateKeyPath`: `C:\Users\simos\Documents\ns-gm-certs\private_key.pem`
+- `privateKeyPath`: `C:\Users\user\Documents\ns-gm-certs\private_key.pem`
 - `restletUrl`: `https://1234567-sb1.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=customscript_ns_gm_restlet&deploy=1`
 - `scope`: `restlets`
 
