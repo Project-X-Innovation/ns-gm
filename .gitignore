@@ -6,7 +6,4 @@ dist/
 coverage/
 .claude/
 *.tgz
-
-# REMOVE LATER
-implementation-actual.md
 CLAUDE.md
