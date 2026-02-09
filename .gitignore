@@ -6,4 +6,3 @@ dist/
 coverage/
 .claude/
 *.tgz
-CLAUDE.md
