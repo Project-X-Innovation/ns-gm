@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+.DS_Store
+dist/
+coverage/
+.claude/
+*.tgz
+
+# REMOVE LATER
+implementation-actual.md
+CLAUDE.md

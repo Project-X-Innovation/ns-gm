@@ -1,0 +1,53 @@
+{
+  "name": "ns-gm",
+  "version": "1.0.3",
+  "description": "CLI tool for executing SuiteScript code against NetSuite",
+  "main": "src/cli.js",
+  "bin": {
+    "ns-gm": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "dev": "node src/cli.js",
+    "link": "npm link"
+  },
+  "keywords": [
+    "netsuite",
+    "cli",
+    "suitescript",
+    "automation"
+  ],
+  "author": "Luis Simosa <simosa37@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Project-X-Innovation/ns-gm-code-runner.git"
+  },
+  "homepage": "https://github.com/Project-X-Innovation/ns-gm-code-runner#readme",
+  "bugs": {
+    "url": "https://github.com/Project-X-Innovation/ns-gm-code-runner/issues"
+  },
+  "files": [
+    "src/",
+    "server/",
+    "ns_gm_restlet.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "axios": "^1.6.0",
+    "commander": "^12.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "jose": "^5.10.0",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "prettier": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

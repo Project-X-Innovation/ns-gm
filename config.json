@@ -1,0 +1,5 @@
+{
+  "proxyPort": 9292,
+  "proxyInactivityTimeout": 900000,
+  "defaultLogCount": 20
+}
