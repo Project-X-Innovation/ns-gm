@@ -8,6 +8,7 @@ const envCommand = require('./commands/env');
 const logsCommand = require('./commands/logs');
 const stopCommand = require('./commands/stop');
 const setupCommand = require('./commands/setup');
+const setupCiCommand = require('./commands/setup-ci');
 const helpCommand = require('./commands/help');
 
 const program = new Command();
@@ -61,6 +62,19 @@ program
     .description('Interactive credential configuration')
     .option('--show', 'Show current configuration (secrets masked)')
     .action(setupCommand);
+
+// Setup CI command - Non-interactive credential configuration
+program
+    .command('setup:ci')
+    .description('Non-interactive credential configuration for CI/sandbox')
+    .option('--alias <alias>', 'Profile alias to create/update and activate')
+    .option('--account <accountId>', 'NetSuite Account ID')
+    .option('--clientid <clientId>', 'OAuth 2.0 Client ID')
+    .option('--certificateid <certificateId>', 'Certificate ID (kid)')
+    .option('--privatekeypath <path>', 'Private key path (.pem)')
+    .option('--restleturl <url>', 'RESTlet URL')
+    .option('--scope <scope>', 'OAuth scope (defaults to restlets)')
+    .action(setupCiCommand);
 
 // Help command - Show command documentation
 program
