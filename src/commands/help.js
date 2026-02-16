@@ -112,12 +112,37 @@ const helpData = {
                 "Private key material is not stored in the credentials file"
             ]
         },
+        'setup:ci': {
+            brief: "Non-interactive credential configuration for CI/sandbox",
+            syntax: "ns-gm setup:ci --alias <alias> --account <accountId> --clientid <clientId> --certificateid <certificateId> --privatekeypath <path> --restleturl <url> [--scope <scope>]",
+            description: "Non-interactive setup for CI/sandbox usage. Upserts the specified alias profile and sets it as the active profile in ~/.ns-gm/credentials.json.",
+            options: [
+                { flag: "--alias <alias>", description: "Profile alias to create/update and set active" },
+                { flag: "--account <accountId>", description: "NetSuite account ID" },
+                { flag: "--clientid <clientId>", description: "OAuth 2.0 client ID" },
+                { flag: "--certificateid <certificateId>", description: "Certificate ID (kid)" },
+                { flag: "--privatekeypath <path>", description: "Path to private key PEM file" },
+                { flag: "--restleturl <url>", description: "Deployed RESTlet URL" },
+                { flag: "--scope <scope>", description: "OAuth scope (defaults to restlets)" }
+            ],
+            examples: [
+                "ns-gm setup:ci --alias prod-main --account 1234567_SB1 --clientid abc123 --certificateid custcertificate_oauth2_prod --privatekeypath ./private_key.pem --restleturl \"https://1234567-sb1.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=customscript_ns_gm_restlet&deploy=1\"",
+                "ns-gm setup:ci --alias prod-main --account 1234567_SB1 --clientid abc123 --certificateid custcertificate_oauth2_prod --privatekeypath ./private_key.pem --restleturl \"https://1234567-sb1.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=customscript_ns_gm_restlet&deploy=1\" --scope restlets"
+            ],
+            clarifications: [
+                "All setup flags except --scope are required",
+                "Profile alias is upserted (create or overwrite) by alias name",
+                "Successful command always sets the alias as active",
+                "Private key path must exist on disk when command runs",
+                "RESTlet URL must include /app/site/hosting/restlet.nl and query params"
+            ]
+        },
         help: {
             brief: "Show help information for commands",
             syntax: "ns-gm help [command] [options]",
             description: "Displays help information for all commands or a specific command. Output format can be JSON (default, for AI agents) or plain text (for humans).",
             options: [
-                { flag: "[command]", description: "Optional command name to get detailed help for (init, run, env, logs, stop, setup)" },
+                { flag: "[command]", description: "Optional command name to get detailed help for (init, run, env, logs, stop, setup, setup:ci)" },
                 { flag: "--format <format>", description: "Output format: json (default) or text" }
             ],
             examples: [

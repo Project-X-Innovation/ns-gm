@@ -90,6 +90,34 @@ Show active profile/config:
 ns-gm setup --show
 ```
 
+## Non-interactive Setup (CI/Sandbox)
+
+Use `setup:ci` for headless environments. This command upserts a profile alias and sets it active.
+
+```bash
+ns-gm setup:ci \
+  --alias prod-main \
+  --account 1234567_SB1 \
+  --clientid 6f8d... \
+  --certificateid custcertificate_oauth2_prod \
+  --privatekeypath C:\Users\user\Documents\ns-gm-certs\private_key.pem \
+  --restleturl "https://1234567-sb1.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=customscript_ns_gm_restlet&deploy=1" \
+  --scope restlets
+```
+
+Required flags:
+
+- `--alias`
+- `--account`
+- `--clientid`
+- `--certificateid`
+- `--privatekeypath`
+- `--restleturl`
+
+Optional flags:
+
+- `--scope` (defaults to `restlets`)
+
 Credentials are stored at:
 
 `~/.ns-gm/credentials.json`
