@@ -1,6 +1,6 @@
 {
   "name": "ns-gm",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "CLI tool for executing SuiteScript code against NetSuite",
   "main": "src/cli.js",
   "bin": {
