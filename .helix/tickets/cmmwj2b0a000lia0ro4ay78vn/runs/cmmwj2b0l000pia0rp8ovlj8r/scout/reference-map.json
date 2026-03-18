@@ -1,0 +1,92 @@
+{
+  "problem": "ns-gm currently has no concept of read-only vs write mode. All code executed via `ns-gm run` has full access to every NetSuite N/* module (including N/record, N/transaction, N/email, etc.) with no permission gating. The ticket requests a mechanism for an agent (Claude Code) operating in read-only mode to temporarily request write permissions for a single script, with human approval via a pop-up/UI window, scoped to that script only.",
+  "files": [
+    {
+      "path": "src/cli.js",
+      "why": "CLI entry point; all commands registered here (lines 14-92). New commands or flags for permission requests would be added here."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "The run command client (lines 58-116). POSTs code to local proxy /run endpoint. This is the execution path that would need to be gated by a permission check."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Express proxy server. The /run endpoint (lines 35-86) forwards code to NetSuite RESTlet. No permission filtering or mode concept exists today."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M authentication. Manages token cache and RESTlet calls (lines 135-207). Single credential profile used per request; no concept of permission levels."
+    },
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "Deployed NetSuite RESTlet. Executes arbitrary code via `new Function()` (line 166) with all N/* modules injected (lines 71-96). No server-side permission filtering. This is where write operations actually happen."
+    },
+    {
+      "path": "src/utils/profileStore.js",
+      "why": "Credential alias store (~/.ns-gm/credentials.json). Profile shape has no permission/mode fields (lines 59-66). Would need extension if read/write profiles are differentiated."
+    },
+    {
+      "path": "src/commands/setup.js",
+      "why": "Interactive setup flow. Creates/selects credential profiles. Would need changes if separate read-only and read-write profiles are managed."
+    },
+    {
+      "path": "src/commands/setup-ci.js",
+      "why": "Non-interactive setup used by helix-ns-server (lines 33-63). Same profile shape, no mode concept."
+    },
+    {
+      "path": "src/commands/init.js",
+      "why": "Starts the local Express proxy as detached process (lines 59-105). Proxy must be running for any execution. The proxy process is long-lived and stateless regarding permissions."
+    },
+    {
+      "path": "config.json",
+      "why": "Proxy configuration (port 9292, inactivity timeout). No permission-related config exists."
+    },
+    {
+      "path": "src/utils/exitCodes.js",
+      "why": "Semantic exit codes for CLI (lines 8-16). No permission-denied exit code exists today."
+    },
+    {
+      "path": "src/commands/help.js",
+      "why": "Help system with JSON and text output formats. Would need updates for new commands/flags."
+    },
+    {
+      "path": "Blueprints/product.md",
+      "why": "Product definition. Line 71 explicitly states 'No advanced profile permissions model in this phase' as a non-goal. This ticket changes that scope."
+    },
+    {
+      "path": "CLAUDE.md",
+      "why": "AI agent guidance document. Lists architecture, command surface, and active files. Would need updates for new permission workflow."
+    },
+    {
+      "path": "package.json",
+      "why": "Dependencies include 'prompts' (terminal UI) and 'commander' (CLI). Node >=24.0.0. No GUI or web UI dependencies exist today."
+    }
+  ],
+  "facts": [
+    "ns-gm is a CLI tool (no web UI) that executes arbitrary SuiteScript via a local Express proxy and a deployed NetSuite RESTlet.",
+    "The execution flow is: CLI (src/commands/run.js) -> proxy (server/app.js /run) -> RESTlet (ns_gm_restlet.js handleRunAction).",
+    "The RESTlet injects all 24 N/* modules (including write-capable modules like N/record, N/transaction, N/email, N/workflow, N/task) into the execution scope via `new Function()` (ns_gm_restlet.js lines 71-96, 166).",
+    "There is no concept of read-only mode, write mode, or permission levels anywhere in the codebase today.",
+    "Credentials are stored as alias-based profiles in ~/.ns-gm/credentials.json with fields: accountId, clientId, certificateId, privateKeyPath, restletUrl, scope (profileStore.js lines 59-66).",
+    "The OAuth scope field in profiles is 'restlets' by default (auth.js line 73) - this is an OAuth-level scope, not a read/write permission scope.",
+    "The proxy server runs as a detached background process on localhost:9292 (init.js lines 82-88).",
+    "Blueprints/product.md line 71 explicitly lists 'No advanced profile permissions model in this phase' as a non-goal.",
+    "The prompts library (terminal interactive prompts) is already a dependency, available for building approval flows in the terminal.",
+    "helix-ns-server uses ns-gm via setup:ci, selecting PRODUCTION credentials for scout/diagnosis steps and SANDBOX for post-product steps (helix-ns-server credentials.ts lines 11-12, 19-24).",
+    "helix-ns-server writes temporary private keys to filesystem, uses them for ns-gm setup:ci, then deletes them (native-phase.ts lines 287-293).",
+    "NetSuite OAuth 2.0 Client Credentials (M2M) tokens are scoped at the OAuth level (restlets, REST Web Services) and tied to an Integration record's role - not per-script or per-operation granular permissions.",
+    "The RESTlet has no mechanism to distinguish read vs write SuiteScript API calls at the code level before execution."
+  ],
+  "unknowns": [
+    "NetSuite does not appear to offer per-script or per-operation granular permissions at the API level. The OAuth token grants full access based on the Integration record's role. How to enforce read-only at the ns-gm/RESTlet layer needs design investigation.",
+    "Whether the 'pop-up window' approval UI should be a native OS window (requiring a desktop GUI framework), a terminal-based interactive prompt, a web-based local page, or something else is unresolved.",
+    "How to deterministically identify which NetSuite API calls in a script are 'write' operations (record.save(), record.delete(), record.submitFields(), email.send(), transaction.void(), etc.) vs read operations - static analysis vs runtime interception.",
+    "How to enforce 'temporary, single-script-only' permission scope: whether the RESTlet should be modified to gate module injection, whether the proxy should intercept, or whether this is enforced purely client-side.",
+    "Whether a second NetSuite Integration record (with a write-capable role) is needed for the write-mode credential set, or if the existing read-only role can be temporarily elevated.",
+    "Whether the RESTlet needs a second deployment (one read-only, one read-write) or if a single RESTlet can handle both modes.",
+    "How the approval state is communicated between the approval UI and the executing CLI/proxy - file-based token, IPC, HTTP endpoint on proxy, or in-process.",
+    "What the specific list of NetSuite modules/operations that count as 'write' vs 'read' should be (e.g., is N/https a write operation? Is N/cache?)",
+    "Whether the helix-ns-server integration pattern (separate PRODUCTION read-only and SANDBOX read-write credentials) is a viable pattern for this use case or if the ticket specifically requires write to production.",
+    "How rollback or undo would work if a write script causes unintended changes."
+  ]
+}
