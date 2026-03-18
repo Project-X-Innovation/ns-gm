@@ -1,0 +1,4 @@
+{
+  "allowedRepoKeys": ["ns-gm"],
+  "rationale": "The ticket explicitly states 'This ticket is only for NSGM' and 'I'm only including Helix-ns-server for example and research purposes but the work here is for NSGM.' All implementation changes (CLI mode awareness, proxy approval endpoint, profile mode field, module classification, exit codes) are within ns-gm. helix-ns-server was used as a reference for the dual-credential pattern only and requires no modifications."
+}

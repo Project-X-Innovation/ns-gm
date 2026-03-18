@@ -1,0 +1,73 @@
+{
+  "questions": [
+    "Q1: Does ns-gm have any existing concept of read-only vs read-write mode or permission gating?",
+    "Q2: Is there any existing infrastructure in the RESTlet or proxy that could support module-level filtering to enforce read-only execution?",
+    "Q3: What is the most practical enforcement point for restricting write-capable operations -- CLI, proxy, or RESTlet?",
+    "Q4: How should the human approval UI be implemented given ns-gm is a CLI tool with no GUI framework?",
+    "Q5: How should 'temporariness' (single-script-only permission) be enforced so write permissions never persist?",
+    "Q6: Could a script bypass module filtering by using SuiteScript require() within new Function() context?",
+    "Q7: What modules are write-capable vs read-safe in the NetSuite N/* module set?"
+  ],
+  "answers": [
+    {
+      "answer": "No. There is zero concept of mode, permission level, or access gating anywhere in the codebase. The profile store has no mode field (profileStore.js lines 59-66). The proxy is a thin passthrough (app.js). The RESTlet injects all 24 modules by default (ns_gm_restlet.js lines 63-68). Blueprints/product.md line 71 explicitly listed 'No advanced profile permissions model in this phase' as a non-goal.",
+      "evidence": [
+        "src/utils/profileStore.js:59-66 - profile shape has no mode/permission fields",
+        "server/app.js:35-86 - /run endpoint has no permission checks",
+        "ns_gm_restlet.js:63-68 - default modules list includes all 24 modules",
+        "Blueprints/product.md:71 - 'No advanced profile permissions model in this phase'"
+      ]
+    },
+    {
+      "answer": "YES -- critical finding. The RESTlet already supports a `modules` parameter in the request payload (ns_gm_restlet.js line 63). When `requestBody.data.modules` is provided, only those modules are injected into the execution scope. The proxy already destructures and passes `modules` from the request body (server/app.js line 37). However, the CLI run.js never sends a `modules` field (line 93-94) -- it only sends `code`. This means module-level filtering is already wired end-to-end from proxy to RESTlet but is unused by the CLI today.",
+      "evidence": [
+        "ns_gm_restlet.js:63 - `const requestedModules = requestBody.data.modules || [full list]`",
+        "ns_gm_restlet.js:114-125 - builds execution scope from only requestedModules",
+        "server/app.js:37 - `const { code, modules } = req.body` already destructures modules",
+        "server/app.js:53 - `data: { code, modules }` already passes modules to RESTlet",
+        "src/commands/run.js:93-94 - only sends `{ code: codeToExecute }`, never `modules`"
+      ]
+    },
+    {
+      "answer": "The enforcement should span CLI + proxy, with the RESTlet's existing module filtering as the server-side backstop. The CLI is the right place for: (1) mode awareness and default read-only module lists, (2) script analysis to detect write module needs, (3) initiating the approval flow. The proxy is the right place for: (1) validating that requests in read-only mode don't include write modules, (2) serving the approval UI web page. The RESTlet already handles enforcement by only injecting requested modules.",
+      "evidence": [
+        "src/commands/run.js:93-94 - CLI is where module list is constructed before sending",
+        "server/app.js:35-86 - proxy receives and forwards; can add validation",
+        "ns_gm_restlet.js:114-125 - RESTlet only injects modules from requestedModules array"
+      ]
+    },
+    {
+      "answer": "A local web page served by the Express proxy is the most practical 'pop-up window'. The proxy (server/app.js) is already a running Express server on localhost:9292. Adding an approval HTML page endpoint is trivial. The CLI can open it via Node's child_process (or the `open` npm pattern) which opens the system browser. The `prompts` library (already a dependency) is an alternative for terminal-only approval, but a browser window better matches the ticket's 'pops up a window' requirement and is visible even when Claude Code is controlling the terminal.",
+      "evidence": [
+        "server/app.js - Express server already running on localhost:9292",
+        "package.json:44 - `prompts` library available for terminal UI as fallback",
+        "Ticket description - 'some command line tool that pops up a window'"
+      ]
+    },
+    {
+      "answer": "Temporariness is enforced by making the approval a one-time token scoped to a specific script hash + module set. The flow: (1) CLI generates a request ID + script hash + needed modules, sends to proxy. (2) Proxy stores the pending request and serves approval page. (3) Human approves via browser. (4) Proxy marks the request as approved (one-time). (5) CLI detects approval and executes with the approved modules. (6) Proxy deletes the approval token after execution. The token is never persisted to disk -- it lives in proxy memory only. Since the proxy is a long-running process, this is sufficient. No profile changes are made; the mode field stays read-only throughout.",
+      "evidence": [
+        "src/commands/init.js:82-88 - proxy runs as persistent detached process (suitable for in-memory state)",
+        "server/app.js - stateless today but can hold in-memory approval state",
+        "src/utils/profileStore.js - profile store is never modified during approval flow"
+      ]
+    },
+    {
+      "answer": "UNKNOWN -- potential bypass risk. SuiteScript 2.x supports `require()` for dynamic module loading, and the RESTlet uses `@NModuleScope Public` (ns_gm_restlet.js line 4). Code executed via `new Function()` might have access to `require` depending on the SuiteScript runtime environment. This is a defense-in-depth concern. Mitigation: the CLI/proxy can perform static analysis on the script code to reject patterns like `require('N/record')` or `require('N/transaction')` before sending to the RESTlet. This is not foolproof but adds a layer. The primary protection remains that this is a human-in-the-loop system -- the human reviews the actual script code in the approval UI.",
+      "evidence": [
+        "ns_gm_restlet.js:4 - `@NModuleScope Public`",
+        "ns_gm_restlet.js:166 - `new Function(...moduleNames, userCode)` execution context",
+        "ns_gm_restlet.js:99-112 - loadModule function uses require('N/' + moduleName)"
+      ]
+    },
+    {
+      "answer": "Based on NetSuite SuiteScript module documentation and the modules currently injected by the RESTlet: Write-capable modules (can create/modify/delete records or trigger side effects): record, transaction, email, file, task, workflow, redirect, cache, certificateControl, https (can POST to external endpoints), http (can POST to external endpoints). Read-safe modules (only read data or perform computation): log, search, query, runtime, format, error, url, encode, crypto, currency, render, xml, config. Note: N/config can technically be used to load company preferences but not to modify them via the module API. N/https and N/http are borderline -- they can make external HTTP calls including POSTs.",
+      "evidence": [
+        "ns_gm_restlet.js:7-11 - full module list defined in RESTlet define()",
+        "ns_gm_restlet.js:63-68 - default requestedModules list"
+      ]
+    }
+  ],
+  "statement": "ns-gm lacks any permission model. All script executions via `ns-gm run` have unrestricted access to all 24 NetSuite N/* modules including write-capable ones (record, transaction, email, etc.). The ticket requests a temporary per-script write permission system with human approval. The critical finding is that the RESTlet already supports module-level filtering via a `modules` parameter (ns_gm_restlet.js line 63) and the proxy already passes this through (server/app.js line 37), but the CLI never sends it (run.js line 93). The solution is to: (1) classify modules as read-safe vs write-capable, (2) default to sending only read-safe modules, (3) add a human approval flow (browser-based via the Express proxy) when a script needs write modules, (4) enforce one-time approval via in-memory tokens in the proxy. Changes are scoped entirely to ns-gm; helix-ns-server is reference only.",
+  "followups": []
+}
