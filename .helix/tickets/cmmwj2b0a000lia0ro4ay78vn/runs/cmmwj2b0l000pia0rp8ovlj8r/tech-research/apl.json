@@ -1,0 +1,72 @@
+{
+  "questions": [
+    "Q1: Can SuiteScript code executed via new Function() call require() to bypass module filtering?",
+    "Q2: What is the right approval UI mechanism given ns-gm is CLI-only with no GUI framework?",
+    "Q3: How should the CLI communicate approval state with the proxy (polling vs push)?",
+    "Q4: Should the approval token be a cryptographic nonce or a simpler identifier?",
+    "Q5: How should write-module detection work — static regex vs AST parsing?",
+    "Q6: Can the approval page be served without adding new npm dependencies?",
+    "Q7: What happens if the proxy restarts during an approval flow?"
+  ],
+  "answers": [
+    {
+      "answer": "YES — this is a real bypass risk. In SuiteScript's AMD runtime, `require` is a global function. `new Function()` creates functions with access to the global scope (but not the enclosing local scope). Therefore, code like `const rec = require('N/record'); rec.load(...)` executed inside `new Function()` could potentially load write-capable modules that were withheld from the injected arguments. HOWEVER, this is a defense-in-depth concern, not a blocker. Mitigations: (1) Static analysis of script code to detect `require(` patterns before sending to RESTlet. (2) The human reviews the actual script in the approval UI — the primary defense. (3) The RESTlet's `@NModuleScope Public` and the SuiteScript 2.1 runtime may impose additional restrictions on dynamic require in some contexts (reports of inconsistent behavior). This is an accepted known limitation for MVP.",
+      "evidence": [
+        "ns_gm_restlet.js:166 — new Function(...moduleNames, userCode) gives code global scope access",
+        "ns_gm_restlet.js:99-112 — loadModule function itself uses require('N/' + moduleName), proving require is available",
+        "ns_gm_restlet.js:4 — @NModuleScope Public",
+        "WebSearch: SuiteScript require is a global AMD loader; new Function has access to globals but not locals",
+        "WebSearch: NModuleScope behavior is inconsistent between SuiteScript 2.0 and 2.1 for bundled modules"
+      ]
+    },
+    {
+      "answer": "A browser-based approval page served by the existing Express proxy on localhost:9292. The CLI opens the browser using Node.js built-in child_process.exec() with platform-specific commands (open on macOS, xdg-open on Linux, start on Windows). No new npm dependency needed. This matches the ticket requirement of a 'pop-up window' and is visible even when Claude Code controls the terminal. The `prompts` library (already a dependency) serves as a terminal-based fallback for headless/CI environments.",
+      "evidence": [
+        "server/app.js — Express server already running on localhost:9292; adding endpoints is trivial",
+        "package.json:44 — prompts library already available for terminal fallback",
+        "Ticket: 'some command line tool that pops up a window'",
+        "WebSearch: child_process.exec with platform detection (darwin→open, win32→start, default→xdg-open) is zero-dependency browser opening"
+      ]
+    },
+    {
+      "answer": "CLI polls the proxy for approval status. The flow: (1) CLI POSTs to proxy /approve/request with script content + needed modules. (2) Proxy stores pending request in memory, returns a requestId. (3) CLI opens browser to proxy /approve/ui?requestId=XXX. (4) Human approves/denies via the HTML page, which POSTs to proxy /approve/respond. (5) CLI polls proxy GET /approve/status?requestId=XXX until approved/denied/timeout. Polling is simpler than WebSocket/SSE and has no additional dependencies. Poll interval of 1s is acceptable for human approval latency. Alternative considered: SSE push from proxy to CLI — rejected because it adds complexity and the `axios` library (already a dependency) doesn't natively support SSE.",
+      "evidence": [
+        "package.json:38 — axios is the HTTP client; supports GET/POST but not native SSE",
+        "src/commands/run.js:93 — already uses axios.post for /run; consistent to use axios.get for polling",
+        "server/app.js — Express can serve new endpoints trivially"
+      ]
+    },
+    {
+      "answer": "A cryptographic random token using Node.js built-in crypto.randomUUID() (available since Node 19, well within the >=24 requirement). The token must be unguessable because the approval endpoint is on localhost but could theoretically be accessed by any local process. UUID v4 provides sufficient entropy. The token is scoped to a specific script hash (SHA-256 of the script content) + the requested module set.",
+      "evidence": [
+        "package.json:51 — engines: node >=24.0.0; crypto.randomUUID() is built-in",
+        "No external dependency needed for crypto operations"
+      ]
+    },
+    {
+      "answer": "Static regex matching is sufficient for MVP. The detection scans the script source for references to write-capable module names as identifiers (e.g., /\\brecord\\b/, /\\btransaction\\b/, /\\bemail\\b/). This catches the vast majority of cases where the script uses injected module arguments by name. False positives (e.g., a variable named `record`) are acceptable because they simply trigger the approval flow — the human can then approve. AST parsing is over-engineering for this use case: the scripts are arbitrary SuiteScript fragments (not full modules), and the primary purpose is to guide the approval flow, not to be a security boundary. The security boundary is the RESTlet's module filtering.",
+      "evidence": [
+        "ns_gm_restlet.js:114-125 — RESTlet only injects modules from requestedModules array (the actual security boundary)",
+        "src/commands/run.js:93-94 — CLI constructs the request; this is where detection runs",
+        "Diagnosis: 'the primary protection remains that this is a human-in-the-loop system'"
+      ]
+    },
+    {
+      "answer": "YES. The approval page is a static HTML file with inline CSS/JS served by the Express proxy. Express already supports res.send() with HTML content or express.static(). The HTML page makes fetch() calls to the proxy's approval API endpoints. No template engine, React, or build step needed — a single self-contained HTML string is sufficient. No new npm dependencies required.",
+      "evidence": [
+        "server/app.js — Express already configured; app.get() for a new route is one line",
+        "package.json — express ^4.18.0 already supports static file serving and HTML responses"
+      ]
+    },
+    {
+      "answer": "The approval flow fails gracefully. Since tokens are in-memory only, a proxy restart clears all pending approvals. The CLI's polling loop will receive connection errors or 404s and should report 'Approval session expired — proxy may have restarted.' The human can re-run the command to restart the flow. This is acceptable for MVP because: (1) proxy restarts during approval are rare, (2) the approval flow is human-paced (seconds to minutes), and (3) persisting tokens to disk would add complexity and a security risk (stale tokens on disk).",
+      "evidence": [
+        "src/commands/init.js:82-88 — proxy runs as detached process; restart loses in-memory state",
+        "Product: 'Tokens are in-memory only, never persisted'",
+        "Product: 'Proxy process restart clears all tokens' (acknowledged as acceptable)"
+      ]
+    }
+  ],
+  "statement": "The technical direction leverages the existing but unused RESTlet module filtering parameter (ns_gm_restlet.js:63) as the enforcement backbone. The CLI defaults to sending only read-safe modules. When write modules are detected via static regex analysis, the CLI initiates a browser-based approval flow through the existing Express proxy. Approval tokens are cryptographic UUIDs stored in proxy memory, scoped to script hash + module set, single-use, and never persisted. The CLI polls the proxy for approval status. No new npm dependencies are required — browser opening uses built-in child_process, approval UI is inline HTML served by Express, and tokens use built-in crypto.randomUUID(). The known require() bypass risk is accepted as a defense-in-depth limitation with static analysis mitigation. Changes are scoped entirely to ns-gm.",
+  "followups": []
+}
