@@ -1,0 +1,50 @@
+{
+  "questions": [
+    "Q1: What is the correct step ordering to avoid circular dependencies during implementation?",
+    "Q2: What new files need to be created vs which existing files need modification?",
+    "Q3: Can all verification be done via agent-runnable Node.js commands without needing a live NetSuite connection?",
+    "Q4: Should the proxy validate write-module requests against the approval store, or is client-side gating sufficient?",
+    "Q5: How should the terminal-approve fallback interact with the approval store?"
+  ],
+  "answers": [
+    {
+      "answer": "Bottom-up: (1) moduleClassification (no deps), (2) exitCodes (no deps), (3) profileStore mode extension (no deps), (4) approvalStore (depends on crypto only), (5) approvalPage (depends on approval record shape), (6) app.js proxy endpoints (depends on 4+5), (7) run.js CLI flow (depends on 1+3+4), (8) cli.js flags (depends on 7), (9) help.js (depends on 2+8), (10) docs, (11) e2e verification.",
+      "evidence": [
+        "src/commands/run.js imports from utils/ and calls proxy endpoints",
+        "server/app.js imports approvalStore and approvalPage",
+        "src/cli.js imports run.js and registers options that run.js consumes"
+      ]
+    },
+    {
+      "answer": "New files: src/utils/moduleClassification.js, server/approvalStore.js, server/approvalPage.js (3 new). Modified files: src/utils/exitCodes.js, src/utils/profileStore.js, server/app.js, src/commands/run.js, src/cli.js, src/commands/help.js, CLAUDE.md, Blueprints/product.md (8 modified). Unchanged: ns_gm_restlet.js, server/auth.js, package.json, config.json.",
+      "evidence": [
+        "tech-research/tech-research.md architecture section",
+        "diagnosis/diagnosis-statement.md proposed approach"
+      ]
+    },
+    {
+      "answer": "Yes. All verification steps use `node -e` commands that import modules and test their exported functions in isolation. No live NetSuite connection or running proxy is needed for verification — the tests validate module loading, function behavior, route registration, and data flow. The proxy's route table can be inspected without starting the server.",
+      "evidence": [
+        "Express app exports the app object for testing without calling listen()",
+        "approvalStore is pure in-memory logic",
+        "moduleClassification is pure function logic"
+      ]
+    },
+    {
+      "answer": "Both. The proxy should validate as a defense-in-depth measure. When the run endpoint receives a request with write-capable modules but no approvalToken (and profile is read-only), it should reject with 403. This prevents a malicious or buggy CLI from bypassing the approval flow. The CLI also validates before sending to provide good UX (error message, approval flow trigger).",
+      "evidence": [
+        "tech-research/tech-research.md: 'The CLI is where module list is constructed before sending'",
+        "diagnosis/apl.json: 'enforcement should span CLI + proxy'"
+      ]
+    },
+    {
+      "answer": "The terminal-approve fallback creates the same approval record in the store but instead of opening a browser and polling, it uses the `prompts` library to show the script and modules inline in the terminal. The human approves/denies via terminal prompts. The CLI then calls respondToApproval() directly (bypassing the browser endpoints) and proceeds to consume the token via the normal /run path. This keeps the proxy-side validation consistent.",
+      "evidence": [
+        "package.json: prompts ^2.4.2 already a dependency",
+        "tech-research/tech-research.md: '--terminal-approve flag falls back to prompts library'"
+      ]
+    }
+  ],
+  "statement": "The implementation plan has 11 atomic steps in dependency order: (1) module classification utility, (2) exit code addition, (3) profile mode extension, (4) approval store, (5) approval HTML page, (6) proxy approval endpoints, (7) run command rewrite with approval flow, (8) CLI flag registration, (9) help system update, (10) documentation, (11) end-to-end verification. Three new files are created; eight existing files are modified. No new npm dependencies. RESTlet unchanged. All verification is agent-runnable via `node -e` commands. Changes scoped entirely to ns-gm.",
+  "followups": []
+}
