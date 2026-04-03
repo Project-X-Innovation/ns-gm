@@ -1,0 +1,58 @@
+{
+  "questions": [
+    "How can NSGM grant elevated write permissions for a single script execution while keeping read-only as the default?",
+    "Can NetSuite support per-script or per-execution permission scoping, or is the permission model strictly role-wide?",
+    "What is the most secure mechanism to temporarily switch from a read-only OAuth role to a write-capable role for exactly one execution?",
+    "How should the approval UI work — CLI prompt, browser-based, or OS-native popup?",
+    "Can static analysis of the submitted code detect write operations (record.save, record.delete, file.create, etc.) to inform the approver?",
+    "Should the elevated profile use a separate RESTlet deployment, or can the same RESTlet work with a different OAuth token?"
+  ],
+  "answers": [
+    {
+      "answer": "NetSuite's permission model is role-wide, not script-specific. There is no native mechanism to grant 'permission for just this script.' Permissions are determined entirely by the role attached to the OAuth Integration record.",
+      "evidence": [
+        "ns_gm_restlet.js: The RESTlet executes arbitrary code via new Function() with all 23 N/* modules injected. There is no module filtering or permission gating in the RESTlet itself.",
+        "server/auth.js: getAccessToken() obtains an OAuth token using the profile's clientId/certificateId. The token's capabilities are determined by the NetSuite Integration record's role, not by any NSGM-side logic.",
+        "Scout U2: 'NetSuite's permission model is role-based, not script-based.'"
+      ]
+    },
+    {
+      "answer": "The profile system (profileStore.js) already supports multiple credential aliases with one active at a time. This is the most natural architectural lever for toggling between read-only and elevated OAuth roles. A dual-profile setup — one read-only (default active), one elevated (activated on approval) — can achieve the desired behavior.",
+      "evidence": [
+        "src/utils/profileStore.js: loadStore() manages profiles object, getActiveProfile() returns one profile, setActiveAlias() switches between them. Store is at ~/.ns-gm/credentials.json.",
+        "server/app.js line 47: requireActiveProfile() reads the active profile at request time, so switching the active alias between requests changes which OAuth token (and thus which role) is used.",
+        "server/auth.js line 46: profileCacheKey() includes accountId, clientId, certificateId — different profiles produce different cache keys and different OAuth tokens."
+      ]
+    },
+    {
+      "answer": "The RESTlet is permission-agnostic — it runs whatever code it receives under whatever role the OAuth token grants. The same RESTlet deployment works with both read-only and elevated OAuth tokens. No separate RESTlet deployment is needed.",
+      "evidence": [
+        "ns_gm_restlet.js: The RESTlet has no permission checks of its own. It runs new Function() with all modules regardless of who calls it. Permissions are enforced by NetSuite at the record/operation level based on the OAuth role.",
+        "server/auth.js: REST.post() uses whatever credentials are passed to it. The RESTlet URL is the same; only the OAuth token changes."
+      ]
+    },
+    {
+      "answer": "Static code analysis can detect likely write operations in submitted scripts. Modules like record.save, record.delete, record.submitFields, file.create, file.delete, transaction.save, task.create, workflow.initiate are write operations. Detecting these before execution enables informed approval.",
+      "evidence": [
+        "ns_gm_restlet.js lines 62-66: The 'modules' parameter already controls which modules are injected. The code content can be scanned for write method patterns before submission.",
+        "src/commands/run.js: The code is read as a string before being posted to the proxy, so regex or AST analysis is feasible at the CLI or proxy layer."
+      ]
+    },
+    {
+      "answer": "The 'temporary' scope can be enforced as single-execution: switch active alias to elevated profile, execute one ns-gm run, immediately revert to the read-only profile. This is deterministic and prevents the elevated role from persisting.",
+      "evidence": [
+        "server/app.js: Each /run request reads the active profile at request time via requireActiveProfile(). Switching the alias before and after a single request scopes the elevation to that request only.",
+        "src/commands/run.js: The run command is a single HTTP POST. If the CLI manages the profile switch around this call, the elevation window is exactly one request."
+      ]
+    },
+    {
+      "answer": "helix-ns-server demonstrates the pattern of credential materialization for short-lived use: decrypt credentials, write to temp file, use for execution, then scrub. The same lifecycle model applies — materialize the elevated profile, use it once, revert.",
+      "evidence": [
+        "helix-ns-server orchestrator/credentials.ts: resolveNsGmCredentialEnvironmentForStep() maps steps to PRODUCTION or SANDBOX credentials.",
+        "helix-ns-server deploy-phase.ts: writeSecureTempPrivateKey() creates a chmod 600 temp file, and scrubTempFile() deletes it after use."
+      ]
+    }
+  ],
+  "statement": "NSGM has zero permission enforcement across all three layers (CLI, proxy, RESTlet). Security relies entirely on the NetSuite OAuth role. The solution space centers on dual-profile elevation: maintain a read-only profile as default and an elevated profile activated for exactly one execution with human approval. NetSuite cannot scope permissions per-script, so the gating must happen at the NSGM layer. The profile system already supports the multi-alias mechanism needed. The primary implementation work is: (1) an approval flow that detects write operations in submitted code and presents them to a human, (2) single-execution profile switching that activates the elevated profile for one run then reverts, and (3) a new CLI command or proxy endpoint to manage the approval lifecycle.",
+  "followups": []
+}
