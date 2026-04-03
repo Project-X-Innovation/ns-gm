@@ -1,0 +1,129 @@
+{
+  "problem": "NSGM currently has no mechanism to temporarily grant write permissions for a specific script execution while maintaining read-only defaults. The RESTlet executes arbitrary SuiteScript with whatever permissions the OAuth role grants, and there is no permission gating, allowlisting, or per-script scoping. The ticket asks for a solution where an agent (Claude Code) can request elevated permissions for one specific script, with a human approval step, without permanently changing the permission model.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "Core RESTlet deployed to NetSuite that executes arbitrary SuiteScript via `new Function()`. All 23 N/* modules are injected with no filtering. This is the boundary where script execution happens and where any permission gating or module restriction would need to live."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Local Express proxy with /run and /logs endpoints. The /run endpoint passes code directly to the RESTlet with no validation, filtering, or permission checks. Any approval workflow or permission-checking logic would need to intercept here."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M authentication layer. Token is cached per profile credentials. The RESTlet executes under whatever role the OAuth integration maps to. Multiple profiles could be used to switch between read-only and elevated roles."
+    },
+    {
+      "path": "src/cli.js",
+      "why": "CLI entry point using Commander.js. Defines all 8 commands (init, run, env, logs, stop, setup, setup:ci, help). A new command for permission requests would be registered here."
+    },
+    {
+      "path": "src/utils/profileStore.js",
+      "why": "Manages credential profiles at ~/.ns-gm/credentials.json. Supports multiple aliases (profiles) with one active at a time. Profile switching is the most natural mechanism for toggling between read-only and elevated OAuth roles."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "Run command client that posts code to the local proxy /run endpoint. Currently does no permission validation or pre-flight checks. Would need modification to support permission-aware execution."
+    },
+    {
+      "path": "src/commands/setup.js",
+      "why": "Interactive profile setup. Could be extended or duplicated for setting up separate read-only vs elevated profiles."
+    },
+    {
+      "path": "config.json",
+      "why": "Proxy port (9292) and inactivity timeout (900000ms) configuration. Relevant if approval UI is served on same or different port."
+    },
+    {
+      "path": "package.json",
+      "why": "Dependencies: commander (CLI), express (proxy), jose (JWT/OAuth), prompts (interactive CLI), axios (HTTP). No test framework. No ORM. Node >=24.0.0."
+    },
+    {
+      "path": "CLAUDE.md",
+      "why": "AI agent guidance doc describing the architecture, credential model, and command surface."
+    }
+  ],
+  "facts": [
+    {
+      "id": "F1",
+      "claim": "The RESTlet executes arbitrary SuiteScript via `new Function()` with no code validation, filtering, or permission gating.",
+      "evidence": "ns_gm_restlet.js lines 163-169: `new Function(...moduleNames, userCode)` executes whatever code string is passed."
+    },
+    {
+      "id": "F2",
+      "claim": "All 23 N/* modules are available to every execution with no restriction.",
+      "evidence": "ns_gm_restlet.js lines 71-96: moduleMap includes record, transaction, file, task, workflow — all write-capable modules."
+    },
+    {
+      "id": "F3",
+      "claim": "There is no read-only mode or permission scoping in NSGM. Security relies entirely on the NetSuite OAuth role's permissions.",
+      "evidence": "No --readonly flag, no module allowlist, no code analysis in src/commands/run.js or server/app.js. The proxy passes code directly to the RESTlet (server/app.js lines 35-56)."
+    },
+    {
+      "id": "F4",
+      "claim": "NSGM supports multiple credential profiles (aliases) with one active at a time.",
+      "evidence": "src/utils/profileStore.js: loadStore() manages profiles object, getActiveProfile() returns one, setActiveAlias() switches. ~/.ns-gm/credentials.json stores all profiles."
+    },
+    {
+      "id": "F5",
+      "claim": "Each profile maps to a different OAuth integration, which maps to a different NetSuite role with potentially different permissions.",
+      "evidence": "server/auth.js: getAccessToken() uses profile credentials (accountId, clientId, certificateId) to get OAuth token. NetSuite role permissions are determined by the integration record configuration."
+    },
+    {
+      "id": "F6",
+      "claim": "The local proxy has no authentication or authorization — any process on localhost can post to /run.",
+      "evidence": "server/app.js: app.post('/run', ...) has no auth middleware, only checks for active profile (line 37-48)."
+    },
+    {
+      "id": "F7",
+      "claim": "helix-ns-server invokes ns-gm via CLI commands (setup:ci, init, env) with per-environment credential resolution.",
+      "evidence": "helix-ns-server native-phase.ts lines 326-386: executes ns-gm setup:ci with specific credentials, then init, then env."
+    },
+    {
+      "id": "F8",
+      "claim": "helix-ns-server separates pre-product (PRODUCTION) and post-product (SANDBOX) ns-gm credentials by step type.",
+      "evidence": "helix-ns-server orchestrator/credentials.ts: resolveNsGmCredentialEnvironmentForStep() maps step IDs to environment."
+    },
+    {
+      "id": "F9",
+      "claim": "The proxy server listens on port 9292 by default.",
+      "evidence": "config.json: {\"proxyPort\": 9292}. server/app.js uses config.proxyPort."
+    },
+    {
+      "id": "F10",
+      "claim": "The CLI has no formal test suite. Manual integration testing only.",
+      "evidence": "package.json has no test script. No .test.js or .spec.js files exist in the repo."
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "U1",
+      "question": "Can NetSuite OAuth integrations support multiple roles with different permission levels, switchable per-token request?",
+      "context": "The solution may require two separate Integration records in NetSuite — one read-only, one elevated — mapped to different roles."
+    },
+    {
+      "id": "U2",
+      "question": "Does NetSuite support per-script permission scoping, or is permission always role-wide?",
+      "context": "Ticket mentions 'just for this script' permission. NetSuite's permission model is role-based, not script-based. May need architectural workaround."
+    },
+    {
+      "id": "U3",
+      "question": "How should the approval UI be implemented? CLI popup, browser window, or terminal prompt?",
+      "context": "Ticket mentions 'pops up a window'. Could be terminal-based (prompts library already in deps), browser-based (Express could serve a page), or OS-native."
+    },
+    {
+      "id": "U4",
+      "question": "What constitutes 'temporary' permission? Time-based expiry, single-execution scope, or session-based?",
+      "context": "Ticket emphasizes not wanting permissions to stay. Need to define the revocation mechanism."
+    },
+    {
+      "id": "U5",
+      "question": "Can the RESTlet's module injection be restricted at runtime based on a parameter, or does it need a separate RESTlet deployment?",
+      "context": "The RESTlet defines moduleMap statically. Restricting modules may require a separate RESTlet or dynamic filtering logic."
+    },
+    {
+      "id": "U6",
+      "question": "What permissions does the current production OAuth role have, and is it truly read-only today?",
+      "context": "Ticket says 'read-only access' but this is enforced by NetSuite role config, not by NSGM. Need to confirm current role setup."
+    }
+  ]
+}
