@@ -1,0 +1,15 @@
+{
+  "repos": [
+    {
+      "repoKey": "ns-gm",
+      "intent": "target",
+      "rationale": "The ticket explicitly states 'This ticket is only for NSGM.' All implementation work — the approval flow, single-execution profile switching, and write-operation detection — belongs in ns-gm. The three-layer architecture (CLI → proxy → RESTlet) provides clear intercept points for each piece."
+    },
+    {
+      "repoKey": "helix-ns-server",
+      "intent": "context",
+      "rationale": "Included for research purposes only. Provides reference patterns for credential materialization (decrypt → temp file → use → scrub), ns-gm CLI invocation (setup:ci, init, env), and per-step credential environment selection. No code changes needed in this repo for the current ticket."
+    }
+  ],
+  "updatedBy": "diagnosis"
+}
