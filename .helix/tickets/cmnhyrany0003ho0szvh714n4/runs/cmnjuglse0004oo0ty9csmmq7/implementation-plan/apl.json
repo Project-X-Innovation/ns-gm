@@ -1,0 +1,72 @@
+{
+  "questions": [
+    "What files need to change for the script-scoped permission elevation feature?",
+    "Where should the approval gate intercept the execution flow?",
+    "How should the elevated profile be stored and managed in credentials.json?",
+    "What regex patterns should detect write operations in submitted code?",
+    "How should profile reversion be guaranteed after elevated execution?",
+    "What exit code should signal elevation denial to agents?",
+    "How should the setup command be extended to register elevated profiles?"
+  ],
+  "answers": [
+    {
+      "answer": "Five files change: (1) new src/utils/writeDetector.js for regex-based write detection, (2) src/utils/exitCodes.js to add ELEVATION_DENIED: 7, (3) src/utils/profileStore.js to add getElevatedAlias/setElevatedAlias/clearElevatedAlias and update normalizeStore, (4) src/commands/run.js to add the approval gate before the proxy POST, (5) src/commands/setup.js to offer elevated profile registration. Zero proxy or RESTlet changes.",
+      "evidence": [
+        "tech-research/tech-research.md: 'No new code modules (no new npm packages)' — lists 5 files to create/modify",
+        "src/commands/run.js lines 74-82: Code is read as string before HTTP POST — ideal intercept point",
+        "src/utils/profileStore.js lines 9-17: normalizeStore() currently strips unknown keys — must be updated to preserve elevatedAlias",
+        "src/utils/exitCodes.js lines 8-16: Codes 0-6 used, code 7 available"
+      ]
+    },
+    {
+      "answer": "The approval gate intercepts in run.js after the code string is resolved (after the --file read on line 82) but before the proxy health check and HTTP POST. This ensures the code is available for analysis before any network activity, and the approval decision is made before the proxy is involved.",
+      "evidence": [
+        "src/commands/run.js lines 74-82: Code is fully resolved as a string at this point",
+        "src/commands/run.js lines 84-89: Proxy health check follows — approval should happen before this",
+        "server/app.js line 47: requireActiveProfile() reads active alias at request time — switching before POST is sufficient"
+      ]
+    },
+    {
+      "answer": "The elevated profile is stored as an optional elevatedAlias field at the top level of credentials.json alongside activeAlias. This is backward-compatible: existing stores without elevatedAlias load fine (getElevatedAlias returns null). The normalizeStore function must be updated to preserve this field instead of stripping it.",
+      "evidence": [
+        "src/utils/profileStore.js lines 9-17: normalizeStore() currently only preserves activeAlias and profiles — must add elevatedAlias",
+        "tech-research/tech-research.md: 'The credentials.json shape becomes: { activeAlias, elevatedAlias, profiles } — backward-compatible'",
+        "src/utils/profileStore.js line 7: EMPTY_STORE has activeAlias and profiles — elevatedAlias not included (correct for default)"
+      ]
+    },
+    {
+      "answer": "Seven regex patterns covering the known write methods across N/* modules: record.(save|delete|submitFields|create), file.(create|delete|write|append), transaction.(save|create|delete), task.(create|submit), workflow.(initiate|trigger), email.(send), redirect.(save|toRecord|toTaskLink). Conservative recall — false positives are harmless because the human sees the full code.",
+      "evidence": [
+        "ns_gm_restlet.js lines 71-96: The 23 N/* modules define the surface area. Write methods are well-known.",
+        "tech-research/tech-research.md: 'The regex set is intentionally conservative (high recall). False positives are harmless.'",
+        "product/product.md: Write-operation detection lists record.save, record.delete, record.submitFields, file.create, file.delete, transaction.save, task.create, workflow.initiate"
+      ]
+    },
+    {
+      "answer": "Profile reversion uses a try/finally block wrapping the proxy POST. Additionally, a process.on('exit') handler reverts as extra safety if the CLI crashes before the finally block runs. The proxy reads the active profile per request (requireActiveProfile on server/app.js line 47), so the elevation window is exactly one HTTP call.",
+      "evidence": [
+        "src/utils/profileStore.js line 33-37: saveStore() does fs.writeFileSync — atomic for small JSON",
+        "server/app.js line 17-23: requireActiveProfile() reads on every request — no stale cache at proxy level",
+        "tech-research/tech-research.md Decision 3: 'A try/finally guarantees reversion even on exceptions'"
+      ]
+    },
+    {
+      "answer": "Exit code 7 (ELEVATION_DENIED). Agents (Claude Code) need a machine-readable signal distinct from execution errors (5), config errors (2), or auth errors (6) so they can adapt their approach rather than retry.",
+      "evidence": [
+        "src/utils/exitCodes.js lines 8-16: Current codes are 0-6. Code 7 is available.",
+        "product/product.md: 'After denial, the agent receives a clear error and can adapt.'",
+        "tech-research/tech-research.md Decision 5: 'A distinct exit code enables the agent to adapt'"
+      ]
+    },
+    {
+      "answer": "Extend setup.js to prompt 'Set this as the write-capable (elevated) profile?' after creating a new alias. Also display the elevated alias in showConfig(). This reuses the existing prompts flow with minimal new code.",
+      "evidence": [
+        "src/commands/setup.js lines 65-127: createNewAlias() flow ends with saveProfile + setActiveAlias — natural point to ask about elevation",
+        "src/commands/setup.js lines 129-148: showConfig() displays all profile fields — add elevatedAlias here",
+        "tech-research/tech-research.md: 'Extend the existing ns-gm setup command with an elevated profile option'"
+      ]
+    }
+  ],
+  "statement": "The implementation plan adds script-scoped permission elevation to ns-gm through five atomic changes: a write-operation detector module (regex-based), an ELEVATION_DENIED exit code, elevated alias support in the profile store, an approval gate in the run command (try/finally profile switching), and elevated profile registration in setup. All changes are in the CLI layer with zero proxy or RESTlet modifications. No new npm dependencies are required. The plan is ordered as: writeDetector → exitCodes → profileStore → run.js → setup.js, with each step independently testable.",
+  "followups": []
+}

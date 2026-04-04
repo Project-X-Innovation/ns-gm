@@ -1,0 +1,73 @@
+{
+  "questions": [
+    "Where in the three-layer architecture should the approval gate live — CLI, proxy, or RESTlet?",
+    "How should write-operation detection work — regex, AST, or RESTlet-side module restriction?",
+    "What is the safest mechanism for single-execution profile switching given the proxy reads the active profile per request?",
+    "How should the elevated profile be configured — new setup command, extend existing setup, or CI-style flags?",
+    "What exit code should be returned when a human denies an elevation request?",
+    "Does the token cache in auth.js interfere with rapid profile switching between read-only and elevated?",
+    "Should the CLI block execution when write ops are detected but no elevated profile is configured, or should it warn and proceed?"
+  ],
+  "answers": [
+    {
+      "answer": "The approval gate should live in the CLI (run.js), not the proxy or RESTlet. The CLI already reads code as a string before posting to the proxy, the `prompts` library is already a dependency, and the proxy's `requireActiveProfile()` reads the active alias at request time — so switching aliases between CLI invocations changes which OAuth token is used without any proxy changes.",
+      "evidence": [
+        "src/commands/run.js lines 74-82: Code is read as a string (from --code or --file) before the HTTP POST to the proxy.",
+        "server/app.js line 47: requireActiveProfile() calls getActiveProfile() which reads credentials.json at request time.",
+        "src/utils/profileStore.js line 72-85: setActiveAlias() writes to credentials.json immediately.",
+        "package.json: `prompts` is already a production dependency.",
+        "src/commands/setup.js: Shows the prompts library usage pattern (select, text, confirm types)."
+      ]
+    },
+    {
+      "answer": "Regex-based write-operation detection is the right approach for MVP. The code is a string at the CLI level. The known write methods are a small, stable set (record.save, record.delete, record.submitFields, file.create, file.delete, transaction.save, task.create, workflow.initiate). Regex is simple, fast, requires no AST parser dependency, and false negatives are mitigated by showing the full code to the human approver.",
+      "evidence": [
+        "ns_gm_restlet.js lines 71-96: The 23 N/* modules define the surface area. Write methods are well-known and enumerable.",
+        "src/commands/run.js lines 74-82: Code is available as a plain string, regex-compatible.",
+        "Product future considerations: 'Move from regex-based write detection to AST-based analysis' — confirms regex is the planned MVP approach."
+      ]
+    },
+    {
+      "answer": "Single-execution profile switching is safe because: (1) setActiveAlias() is a synchronous file write to credentials.json, (2) the proxy reads credentials.json fresh on every request via requireActiveProfile(), (3) different profiles produce different cache keys in auth.js so tokens don't collide, (4) a try/finally block in run.js guarantees reversion even if execution throws.",
+      "evidence": [
+        "src/utils/profileStore.js line 33-37: saveStore() does fs.writeFileSync — atomic for the small JSON file.",
+        "server/app.js line 17-23: requireActiveProfile() reads on every request — no stale cache at proxy level.",
+        "server/auth.js line 46-53: profileCacheKey() includes clientId and certificateId — different profiles = different cache keys.",
+        "server/auth.js lines 89-94: isCachedTokenUsable() checks expiry — no cross-profile token reuse."
+      ]
+    },
+    {
+      "answer": "Extend the existing `ns-gm setup` command with an 'elevated profile' option. When the user selects 'new' in setup, add a prompt asking if this is an elevated (write-capable) profile. Store a convention: the elevated alias name is recorded in a known field or convention (e.g., a top-level `elevatedAlias` key in credentials.json). Alternatively, add a new `ns-gm setup:elevated` command that is a thin wrapper around the existing createNewAlias flow with the elevated alias registered.",
+      "evidence": [
+        "src/commands/setup.js lines 65-127: createNewAlias() prompts for all required fields and calls saveProfile + setActiveAlias.",
+        "src/commands/setup.js lines 47-63: selectAlias() shows existing aliases plus 'new' — can be extended with an 'elevated' option.",
+        "src/utils/profileStore.js lines 6-7: EMPTY_STORE has activeAlias and profiles — adding an elevatedAlias field is a backward-compatible extension."
+      ]
+    },
+    {
+      "answer": "A new exit code ELEVATION_DENIED (7) should be added to exitCodes.js. This gives agents (Claude Code) a machine-readable signal distinct from execution errors, config errors, or auth errors. The agent can catch this specific code and know the human explicitly denied the request.",
+      "evidence": [
+        "src/utils/exitCodes.js lines 8-16: Current codes are 0-6. Code 7 is available and maintains numeric convention.",
+        "Product success criteria: 'After denial, the agent receives a clear error and can adapt.' — agents need a distinguishable error."
+      ]
+    },
+    {
+      "answer": "The token cache does NOT interfere with rapid switching. Different profiles have different clientId/certificateId values, producing different cache keys. When the elevated profile's token is fetched, it gets its own cache entry. When reverting, the read-only profile's cached token is still valid (unless expired). The TOKEN_REFRESH_BUFFER_MS (60s) buffer ensures tokens are refreshed before expiry but does not cause cross-profile interference.",
+      "evidence": [
+        "server/auth.js lines 46-53: profileCacheKey() returns 'accountId|clientId|certificateId|scope' — unique per profile.",
+        "server/auth.js lines 7-9: tokenCache is a Map keyed by profileCacheKey — no collision possible.",
+        "server/auth.js lines 135-162: getAccessToken() resolves independently per cacheKey."
+      ]
+    },
+    {
+      "answer": "When write operations are detected but no elevated profile is configured, the CLI should fail with a clear CONFIG_ERROR message telling the user to run `ns-gm setup` to configure an elevated profile. It should NOT silently proceed, because the agent expected write access and would receive a permission error from NetSuite that is harder to diagnose.",
+      "evidence": [
+        "Product safety principle: 'Safe by default: Read-only is the permanent default. Write access requires explicit human approval every time.'",
+        "src/utils/exitCodes.js: CONFIG_ERROR (2) already exists for configuration errors.",
+        "Product success criteria: 'If no elevated profile is configured, elevation request fails with a clear message.'"
+      ]
+    }
+  ],
+  "statement": "The technical direction is CLI-gated single-execution elevation. All implementation lives in ns-gm with zero proxy or RESTlet changes. The CLI (run.js) scans submitted code for write patterns using regex, presents an interactive approval prompt via the existing `prompts` library, switches the active profile alias to the elevated profile on approval, executes the single run request, and reverts the alias in a try/finally block. The profileStore already supports the multi-alias mechanism, and the proxy already reads the active profile per request, so the elevation window is exactly one HTTP call. Setup is extended to register an elevated profile alias. A new exit code (7) signals denial to the agent.",
+  "followups": []
+}
