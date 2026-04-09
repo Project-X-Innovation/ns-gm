@@ -1,0 +1,72 @@
+{
+  "questions": [
+    "What existing infrastructure can support an approval-gated execute mode across the Helix + NetSuite stack?",
+    "Can a NetSuite beforeSubmit UserEventScript reliably make external HTTP calls to Helix mainland within governance limits?",
+    "What competing approaches exist for dry-run/approval/execution and what are their trade-offs?",
+    "What data model changes are needed to track approval state?",
+    "Which repositories need changes and what is the scope per repo?",
+    "How can proposed record changes be presented to non-technical NetSuite admins for meaningful approval?"
+  ],
+  "answers": [
+    {
+      "answer": "Zero approval infrastructure exists. The building blocks are: (1) EXECUTE enum in TicketMode (Prisma + client types) with no specialized behavior, (2) ns-gm RESTlet executing arbitrary SuiteScript via new Function() with 24 N/* modules (fire-and-forget, no intercept), (3) NsDeployment model providing a pattern for async operations with status tracking (SDF file deploys only), (4) NS-GM credentials stored per org per environment (SANDBOX/PRODUCTION), (5) Workflow step chain treating EXECUTE identically to AUTO. No approval models, API routes, UI components, beforeSubmit scripts, or NS-to-Helix callback channels exist.",
+      "evidence": [
+        "prisma/schema.prisma lines 99-105: TicketMode enum includes EXECUTE",
+        "Runtime DB query: 0 EXECUTE tickets in production (AUTO=196, FIX=6, RESEARCH=4, BUILD=1)",
+        "Runtime DB query: No tables matching 'approv' or 'execut' exist",
+        "ns_gm_restlet.js lines 23-37: Only 'run' and 'getscriptexecutionlogs' actions handled",
+        "ns_gm_restlet.js line 166: new Function() for arbitrary code execution",
+        "helix-global-server scout reference-map.json: 'No approval model, approval API routes, or approval UI components exist anywhere'",
+        "workflow-step-chain.ts lines 56-58: RESEARCH gets special handling, EXECUTE does not"
+      ]
+    },
+    {
+      "answer": "A beforeSubmit UserEventScript CAN make N/https calls, but governance constraints are significant. User Event Scripts have ~1000 usage units per execution. N/https.post costs approximately 10 units per call. However, there are compounding concerns: (1) Governance chaining — when RESTlet-executed code triggers a record.submit() which fires a beforeSubmit UES, governance costs compound across script contexts. (2) HTTP latency — external calls add wall-clock time which may cause timeouts. (3) Best practice guidance says to keep beforeSubmit lean (validation only) and push heavy operations to afterSubmit. The approach IS technically feasible but adds fragility and governance risk.",
+      "evidence": [
+        "ns_gm_restlet.js lines 7-16: RESTlet defines N/https, N/http among 24 injected modules",
+        "Oracle NetSuite docs: beforeSubmit 'defines the function executed before a record is submitted, prior to any write operation'",
+        "Web search: 'Keep beforeSubmit lean, apply strict validations there, and push heavy jobs to async tasks via afterSubmit'",
+        "Web search: 'SuiteScript governance model — if the number of allowable usage units is exceeded, script execution is terminated'",
+        "ns-gm scout reference-map.json: 'What happens to the RESTlet remaining governance when it submits a record that triggers a beforeSubmit which makes an external HTTP call? Governance chaining is a known NetSuite complexity.'"
+      ]
+    },
+    {
+      "answer": "Six approaches identified for analysis in the research phase: (A) BeforeSubmit intercept with Helix mainland approval check (ticket owner's proposal), (B) Two-phase RESTlet with dry-run action (read-only preview then approved execute), (C) Pre-execution state snapshot via read-only script analysis, (D) Sandbox-first execution with production replay after approval, (E) Suitelet-based approval UI within NetSuite, (F) Server-side script simulation with change prediction. Each has distinct trade-offs in accuracy, governance cost, UX complexity, and implementation scope. The recommended approach for deeper evaluation is (B) Two-phase RESTlet — it avoids beforeSubmit governance chaining, keeps change capture deterministic, requires no new NetSuite script deployment, and reuses the existing ns-gm execution pathway.",
+      "evidence": [
+        "ns_gm_restlet.js: RESTlet already handles 'run' action — adding 'dry-run' and 'execute-approved' actions is architecturally consistent",
+        "ns-gm CLAUDE.md: Architecture is CLI -> proxy -> RESTlet; adding new actions preserves this pipeline",
+        "helix-global-server NsDeployment model: Async operations with status tracking pattern exists and can inform approval record design",
+        "helix-global-server orchestrator.ts lines 588-609: Both SANDBOX and PRODUCTION ns-gm credentials are already loaded per org",
+        "helix-global-client scout: 'No WebSocket — all real-time updates use polling via refetchInterval'"
+      ]
+    },
+    {
+      "answer": "New Prisma models needed: (1) NsExecuteRequest — tracks the full lifecycle of an execute request (proposed, dry-running, pending-approval, approved, executing, succeeded, failed), linking to ticket, organization, and user. (2) NsExecuteApproval — records human approval/rejection with before/after state snapshots, approving user, and timestamp. (3) NsExecuteScript — stores the proposed script string, its parameters, and the deterministic execution context. These follow the existing NsDeployment/NsDeploymentTicket pattern for async operations with status tracking.",
+      "evidence": [
+        "prisma/schema.prisma lines 590-617: NsDeployment model with status enum, org relation, ticket linking — pattern to follow",
+        "prisma/schema.prisma lines 566-584: NsGmCredential per org per environment — credentials infrastructure exists",
+        "helix-global-server package.json: 'prisma migrate deploy' in build script confirms file-based migration strategy"
+      ]
+    },
+    {
+      "answer": "All three primary repos need changes; helix-cli is context-only. (1) helix-global-server: New Prisma models for approval state, new API endpoints for approval CRUD/status, workflow step modifications for EXECUTE mode, deterministic script executor service. (2) helix-global-client: Approval review UI, before/after diff visualization, approval action components (approve/reject), pending approval indicators, execute mode-specific ticket detail views. (3) ns-gm: RESTlet extension with 'dry-run' action for change preview capture, possibly 'execute-approved' action with token validation. (4) helix-cli: No immediate changes needed; approval management is better handled through the Helix web UI.",
+      "evidence": [
+        "helix-global-server scout: 'No approval model, approval API routes exist'",
+        "helix-global-client scout: 'No approval UI components, approval API hooks, or approval-related types exist'",
+        "ns-gm scout: 'RESTlet only handles two actions: run and getscriptexecutionlogs'",
+        "helix-cli agent exploration: 'The actual source code files are not yet present in the repository root'"
+      ]
+    },
+    {
+      "answer": "The approval UX must translate SuiteScript operations into human-readable record change summaries. The two-phase RESTlet approach enables this: the dry-run phase captures the before-state (via record.load) and the proposed after-state (field values the script would set) without committing. The server can then generate a diff showing 'Customer: Acme Corp, Field: creditLimit, Before: 50000, After: 75000' in a structured format the client renders as a side-by-side or inline diff. The existing deployment-detail.tsx pattern (status tracking with step progression) and ns-setup-wizard-dialog.tsx (multi-step flow) provide UI patterns to follow.",
+      "evidence": [
+        "helix-global-client scout: 'Existing NS UI components: ns-setup-wizard-dialog (multi-step wizard), deployment-detail (status tracking)'",
+        "helix-global-client scout: 'No WebSocket — all real-time updates use polling via refetchInterval'",
+        "ticket.md: 'Our users may not be programmers of Helix NetSuite. They can just be admins'",
+        "ticket.md: 'Come up with a very clever, creative UX for allowing them to submit and approve the changes'"
+      ]
+    }
+  ],
+  "statement": "This is a greenfield research ticket requiring architectural design of an approval-gated execute mode for Helix NetSuite. Zero approval infrastructure exists across all four repositories. The EXECUTE enum value exists but has no specialized behavior. The core design challenge is creating a dry-run/approval/execution cycle that navigates NetSuite governance constraints while providing a frictionless UX for non-technical admins. The ticket owner proposed a beforeSubmit UserEventScript approach; five additional competing approaches should be evaluated. The recommended approach for detailed research is a two-phase RESTlet extension (dry-run + execute-approved actions) combined with server-side approval state management and client-side diff-based approval UI. This avoids beforeSubmit governance chaining risks and leverages the existing ns-gm execution pathway.",
+  "followups": []
+}
