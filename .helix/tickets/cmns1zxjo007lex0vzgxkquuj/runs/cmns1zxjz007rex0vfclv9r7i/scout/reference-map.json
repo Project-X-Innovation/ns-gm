@@ -1,0 +1,52 @@
+{
+  "problem": "Research ticket asking whether proxy modules can intercept what actually gets sent to NetSuite, or whether they are limited to capturing user input. The ns-gm RESTlet uses a dynamic module injection pattern (new Function(...moduleNames, userCode)) that makes proxy substitution architecturally viable. Prior research (tickets cmnqr8lkk and cmnrx64kr) has already established Approach B (Two-Phase RESTlet with Module Proxy) as the recommended path.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "The deployed NetSuite RESTlet. Lines 7-16: AMD define() loads 24 N/* modules. Lines 71-96: moduleMap object maps short names to real module references. Lines 115-125: dynamic moduleParamNames/moduleParamValues arrays built from requestedModules — this is the proxy substitution point. Lines 163-169: safeExecute() creates function via new Function(...moduleNames, userCode) and calls it with ...moduleValues. This is the core mechanism that enables proxy module interception."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Express proxy with /run (lines 35-86) and /logs (lines 88-128) endpoints. Forwards requests to RESTlet via nsapi.REST.post(). New /dry-run and /execute endpoints would follow this pattern."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M JWT auth. nsapi.REST.post() handles token acquisition/caching, retry on 401. All new endpoints reuse this."
+    },
+    {
+      "path": "package.json",
+      "why": "v1.0.5, Node >=24. Dependencies: axios, commander, express, jose. No test framework, no lint/typecheck scripts in package.json."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "CLI run command. Posts code to proxy /run endpoint. Backward compatibility boundary — must remain unchanged."
+    },
+    {
+      "path": "src/cli.js",
+      "why": "CLI entry point via Commander. All command registrations."
+    }
+  ],
+  "facts": [
+    "The RESTlet's module injection pattern (new Function(...moduleNames, userCode) at line 166, called with ...moduleValues at line 169) enables proxy substitution by replacing entries in the moduleParamValues array before execution.",
+    "The moduleMap at lines 71-96 contains 24 pre-loaded N/* modules: log, search, record, runtime, format, query, transaction, file, https, http, email, error, url, encode, crypto, currency, render, xml, config, task, redirect, cache, certificateControl, workflow.",
+    "The moduleParamNames/moduleParamValues arrays (lines 115-125) are built dynamically from requestedModules via loadModule(). For dry-run, the 'record' entry can be replaced with a proxy wrapper object before being passed to safeExecute().",
+    "User code receives modules as positional function parameters — it calls record.load(), record.save(), etc. without knowing whether these are real or proxied objects. This is the key answer to 'can we hijack what gets sent': YES, by swapping the module object the code receives.",
+    "Proxy modules do NOT just capture user input. Read operations (load, getFields, copy) pass through to real N/record module. Write operations (save, submitFields, delete) are intercepted to capture before/after state without committing.",
+    "Prior research ticket cmnqr8lkk recommends Approach B (Two-Phase RESTlet with Module Proxy) over Approach A (separate UserEventScript) due to governance chaining risk in beforeSubmit hooks.",
+    "Prior diagnosis ticket cmnrx64kr confirms proxy module viability with detailed before/after capture spec for load, save, create+save, submitFields, delete operations.",
+    "Current RESTlet action dispatcher (lines 23-37) handles only 'run' and 'getscriptexecutionlogs'. New actions ('dry-run', 'execute-approved') would be additive else-if branches.",
+    "SuiteScript 2.1 (@NApiVersion 2.1 at line 2) confirms modern JavaScript support including object spread, destructuring, closures needed for clean proxy implementation.",
+    "Production DB: 0 EXECUTE-mode tickets exist. 10 NsGmCredential records across organizations. TicketMode.EXECUTE is defined in Prisma schema but unused.",
+    "ns-gm has no test framework, no lint scripts, no typecheck scripts. Quality gates are limited to manual testing.",
+    "The helix-global-server has a duplicate copy of the RESTlet at netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js deployed via SDF."
+  ],
+  "unknowns": [
+    "Sublist field capture: getFields() returns body fields only. Sublists require known sublist IDs and column field IDs. Agent-provided targetSublistIds is the proposed workaround but completeness is unverified.",
+    "Whether the proxy can accurately capture N/record.create() state before any record ID exists (placeholder ID approach proposed but not tested).",
+    "How the proxy handles nested operations inside record.transform() callbacks.",
+    "Whether 5000 governance units is sufficient for both dry-run capture AND field enumeration via getFields() for complex records with many sublists.",
+    "N/transaction.void() is a write operation not covered by the N/record proxy. Deferred to Round 2 in prior research.",
+    "Whether the ns-gm repo root RESTlet and the helix-global-server netsuite-setup RESTlet must be kept in exact sync or if only the server copy matters for Helix deployments.",
+    "RESTlet deployment coordination: if new server code calls dry-run before the RESTlet is updated, it will get 'Unknown action' errors."
+  ]
+}
