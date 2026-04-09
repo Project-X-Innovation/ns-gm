@@ -1,0 +1,68 @@
+{
+  "questions": [
+    "Can N/record write methods be reliably intercepted via proxy wrapper within the RESTlet's module injection pattern?",
+    "What is the full implementation scope across all four repos?",
+    "Does EXECUTE mode need new TicketStatus values or a separate NsExecuteRequest state machine?",
+    "How should the two RESTlet copies (ns-gm root vs helix-global-server netsuite-setup) be kept in sync?",
+    "What are the critical risks to non-Helix user functionality regression?",
+    "Is the 5000 governance-unit budget sufficient for the dry-run approach?"
+  ],
+  "answers": [
+    {
+      "answer": "YES — proxy module interception is viable and straightforward. The RESTlet at ns_gm_restlet.js line 166 uses `new Function(...moduleNames, userCode)` with module objects passed as positional arguments (line 169). User code receives N/record as a local variable named 'record'. For dry-run, a wrapper object with the same API surface can replace the real record module: read methods (load, getFields) delegate to the real N/record; write methods (save, submitFields, delete) capture before/after state without committing. SuiteScript 2.1 supports ES2020+ features, making JavaScript object wrapping trivially implementable. The module map at lines 71-96 defines all 23 modules; only 'record' (and optionally 'transaction') need proxying for dry-run.",
+      "evidence": [
+        "ns_gm_restlet.js line 166: `const executionFunction = new Function(...moduleNames, userCode);`",
+        "ns_gm_restlet.js line 169: `const finalResult = executionFunction(...moduleValues);`",
+        "ns_gm_restlet.js lines 71-96: moduleMap defines all 23 N/* modules including 'record' at line 74",
+        "ns_gm_restlet.js lines 115-125: moduleParamNames/moduleParamValues arrays built dynamically from requestedModules",
+        "RESTlet header line 2: @NApiVersion 2.1 confirms modern JS support"
+      ]
+    },
+    {
+      "answer": "Three repos require code changes: ns-gm (RESTlet proxy modules + Express endpoints), helix-global-server (Prisma model, API endpoints, workflow chain, executor service, SDF RESTlet copy), and helix-global-client (approval UI components, API hooks, types). helix-cli requires no changes — it is context-only.",
+      "evidence": [
+        "ns-gm scout reference-map.json: ns_gm_restlet.js (dry-run/execute-approved actions), server/app.js (new endpoints)",
+        "helix-global-server scout reference-map.json: prisma/schema.prisma (new model), workflow-step-chain.ts (EXECUTE handling), routes/api.ts (new endpoints), netsuite-setup RESTlet (sync with ns-gm)",
+        "helix-global-client scout reference-map.json: ticket-detail.tsx (approval rendering), types/api.ts (new types), api service files (new hooks)",
+        "helix-cli scout: no artifacts found — no changes needed"
+      ]
+    },
+    {
+      "answer": "A separate NsExecuteRequest model with its own NsExecuteRequestStatus enum is needed. The existing TicketStatus enum (15 values: QUEUED through REPORT_READY) tracks ticket lifecycle, not individual execute-request lifecycle. The NsExecuteRequest status machine (PROPOSED → DRY_RUNNING → DRY_RUN_FAILED → PENDING_APPROVAL → APPROVED → EXECUTING → SUCCEEDED/FAILED/REJECTED/EXPIRED) is orthogonal to ticket status. This follows the existing NsDeployment pattern which has its own NsDeploymentStatus enum (RUNNING/SUCCEEDED/FAILED).",
+      "evidence": [
+        "Production DB: TicketStatus enum has 15 values, none approval-related",
+        "Production DB: NsDeploymentStatus enum has 3 values (RUNNING/SUCCEEDED/FAILED) — separate from TicketStatus",
+        "prisma/schema.prisma: NsDeployment model (lines 590-617) with its own status enum provides the architectural pattern",
+        "Prior research tech-research.md: specifies NsExecuteRequest with 10-state lifecycle"
+      ]
+    },
+    {
+      "answer": "Both copies must be updated identically. The ns-gm/ns_gm_restlet.js is the standalone repo copy used by non-Helix CLI users. The helix-global-server/netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js is the SDF-deployed copy installed into customer NetSuite accounts via SuiteApp (com.projectxinnovation.helix v1.0.0). Both receive the same new actions (dry-run, execute-approved) so the RESTlet behaves identically regardless of deployment method.",
+      "evidence": [
+        "ns-gm scout-summary.md: 'Two Copies of the RESTlet' section explicitly identifies both locations",
+        "helix-global-server netsuite-setup/manifest.xml: SuiteApp com.projectxinnovation.helix v1.0.0",
+        "helix-global-server netsuite-setup/Objects/customscript_ns_gm_restlet.xml: deployment config for SDF"
+      ]
+    },
+    {
+      "answer": "Risk of non-Helix regression is LOW. New actions ('dry-run', 'execute-approved') are additive alongside existing 'run' and 'getscriptexecutionlogs' in the RESTlet dispatcher (lines 23-37). New Express proxy endpoints ('/dry-run', '/execute') are additive alongside existing '/run' and '/logs' (server/app.js lines 35-128). Existing CLI commands (run, logs, env, setup) interact only with existing endpoints. The module proxy is only activated for dry-run action — the existing 'run' action path is untouched.",
+      "evidence": [
+        "ns_gm_restlet.js lines 23-37: action dispatcher uses if/else chain; unknown actions return error. New actions add new else-if branches without modifying existing ones",
+        "server/app.js lines 35-128: /run and /logs endpoints are independent Express route handlers. New endpoints are separate app.post() registrations",
+        "src/commands/run.js: CLI 'run' command hits /run endpoint only — unaffected by new endpoints",
+        "ns-gm CLAUDE.md: command surface (setup, init, run, env, logs, stop, help) — none touch new endpoints"
+      ]
+    },
+    {
+      "answer": "YES — 5000 governance units is sufficient. Dry-run and execute-approved are separate RESTlet invocations, each receiving their own 5000-unit budget. The dry-run phase primarily uses governance for record.load() (10 units each) and getFields() calls. The execute-approved phase uses governance identically to the existing 'run' action. The safety threshold of 200 remaining units (from prior research) provides adequate buffer. Production data shows the existing 'run' action operates within this budget for typical scripts.",
+      "evidence": [
+        "ns_gm_restlet.js lines 127-137: governance tracking with getRemainingUsage() before and after execution",
+        "Prior research tech-research.md: 'Governance budget is 5000 units per RESTlet invocation. Safety threshold: abort if remaining < 200 units'",
+        "Each RESTlet POST is an independent invocation with fresh governance budget",
+        "record.load() costs ~10 governance units; getFields() is negligible; typical dry-run will load 1-5 records"
+      ]
+    }
+  ],
+  "statement": "TicketMode.EXECUTE exists as a Prisma enum value (defined but unused) with zero implementation across all system layers. The recommended Approach B (Two-Phase RESTlet with Module Proxy) is confirmed viable: the RESTlet's parameter-based module injection at line 166 of ns_gm_restlet.js enables seamless substitution of proxied N/record during dry-run. Implementation requires coordinated changes across three repositories: ns-gm (RESTlet actions + Express endpoints), helix-global-server (NsExecuteRequest data model, API endpoints, workflow step chain modification, deterministic executor service, HMAC token generation, SDF RESTlet copy), and helix-global-client (approval UI with change-diff rendering, TanStack Query hooks, conditional polling). Non-Helix user regression risk is low because all changes are additive — existing RESTlet actions, proxy endpoints, and CLI commands remain untouched.",
+  "followups": []
+}
