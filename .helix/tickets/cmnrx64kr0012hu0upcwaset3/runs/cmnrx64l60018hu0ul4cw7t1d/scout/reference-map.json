@@ -1,0 +1,69 @@
+{
+  "problem": "ns-gm currently has a fire-and-forget execution model: user code is sent to a NetSuite RESTlet and executed immediately with no approval gate, dry-run, or change preview. The ticket requires adding a two-phase RESTlet approach (Approach B from prior research) with dry-run and execute-approved actions, where N/record write methods are intercepted by proxy wrappers during dry-run to capture before/after state without committing. ns-gm must remain fully functional for standalone (non-Helix) users.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "The deployed NetSuite RESTlet. Currently has 2 actions: 'run' and 'getscriptexecutionlogs'. Must be extended with 'dry-run' and 'execute-approved' actions. The proxy module pattern will be implemented here—wrapping N/record to intercept save/submitFields/delete during dry-run. Lines 23-37 define the action dispatcher; lines 63-96 define the module map; lines 163-188 define safeExecute."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Express proxy server with /run and /logs endpoints. Must be extended with /dry-run and /execute endpoints for the two-phase flow. Lines 35-86 define the /run endpoint pattern to replicate."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M JWT authentication module. Handles token acquisition, caching, and RESTlet requests. All new endpoints will use the same nsapi.REST.post() pattern. No changes expected unless token validation is needed."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "CLI 'run' command. Must not regress. The standalone ns-gm experience depends on this file. Pattern shows how CLI commands interact with proxy."
+    },
+    {
+      "path": "src/cli.js",
+      "why": "CLI command registration via Commander. Entry point for all ns-gm commands."
+    },
+    {
+      "path": "src/utils/profileStore.js",
+      "why": "Credential profile management. getActiveProfile() used by proxy endpoints. Must continue to work for non-Helix users."
+    },
+    {
+      "path": "config.json",
+      "why": "Proxy configuration (port 9292, timeouts). May need new timeout values for dry-run operations."
+    },
+    {
+      "path": "package.json",
+      "why": "v1.0.5, Node >=24. Dependencies: axios, commander, express, jose. No test framework. No lint/typecheck scripts."
+    },
+    {
+      "path": "Blueprints/product.md",
+      "why": "Original product vision for ns-gm CLI tool."
+    },
+    {
+      "path": "Blueprints/tech-research.md",
+      "why": "Original technical decisions for OAuth 2.0 M2M flow."
+    }
+  ],
+  "facts": [
+    "RESTlet currently supports 2 actions: 'run' (line 26) and 'getscriptexecutionlogs' (line 29). Unknown actions return error (line 33).",
+    "Code execution uses new Function(...moduleNames, userCode) with 24 pre-loaded N/* modules injected as arguments (line 166).",
+    "Module map at lines 71-96 defines all available modules including record, search, query, log, etc.",
+    "The proxy server at server/app.js reads code and optional modules from req.body (line 37) and forwards to RESTlet via nsapi.REST.post().",
+    "Prior research (ticket cmnqr8lkk000hiq0usgmitppy) recommends Approach B: Two-Phase RESTlet with module proxy for dry-run.",
+    "Proxy modules in this context means: wrapping N/record within the RESTlet to intercept write operations (save, submitFields, delete) during dry-run, while passing through read operations and all other N/* modules.",
+    "Prior tech-research specifies: body field discovery via getFields(), common sublist iteration (item, expense, line, partner, salesteam), and agent-provided targetSublistIds hints.",
+    "Prior tech-research specifies: HMAC approval token generated server-side, included in execute-approved requests, validated by the Helix server (not the RESTlet).",
+    "Governance budget is 5000 units per RESTlet invocation. Safety threshold: abort if remaining < 200 units.",
+    "RESTlet is deployed both as ns_gm_restlet.js in ns-gm repo root and as netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js in helix-global-server. The server copy is deployed via SDF.",
+    "ns-gm has no test framework, no lint scripts, no typecheck scripts in package.json. Quality gates are limited to manual testing.",
+    "No EXECUTE tickets exist in production (0 out of 214 total tickets). TicketMode.EXECUTE is defined but unused.",
+    "helix-global-server build script includes 'prisma migrate deploy', confirming file-based-migrations strategy.",
+    "Backward compatibility: new actions are additive. Existing 'run' and 'getscriptexecutionlogs' remain unchanged. Non-Helix users using only ns-gm CLI will not be affected."
+  ],
+  "unknowns": [
+    "Exact proxy module implementation for sublists—getFields() returns body fields but there is no equivalent for sublists; agent hint (targetSublistIds) is the proposed workaround but may be incomplete.",
+    "Whether the ns-gm repo root restlet and the helix-global-server netsuite-setup restlet should be kept in sync or whether only the server copy matters for Helix deployments.",
+    "Whether dry-run can accurately capture N/record.create() state when no record ID exists yet.",
+    "How N/record proxy handles nested operations (e.g., record.load inside a callback passed to record.transform).",
+    "Whether 5000 governance units is sufficient for both dry-run capture AND subsequent execute-approved in separate invocations.",
+    "How the approval UI will communicate approval/rejection status to the orchestrator for deterministic execution."
+  ]
+}
