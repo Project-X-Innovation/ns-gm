@@ -1,0 +1,60 @@
+{
+  "questions": [
+    "Q1: Can proxy modules intercept what actually gets sent to NetSuite, or are they limited to capturing user input?",
+    "Q2: Does the RESTlet architecture support transparent module substitution without changing how user code works?",
+    "Q3: What is the substitution mechanism and where exactly in the code does it occur?",
+    "Q4: What can and cannot be captured by proxy modules during a dry-run?",
+    "Q5: Has this approach already been researched and validated in prior work?",
+    "Q6: What is the current production state of EXECUTE mode and NsGmCredential infrastructure?"
+  ],
+  "answers": [
+    {
+      "answer": "YES — proxy modules can intercept actual NetSuite operations, not just user input. The RESTlet creates execution functions via new Function(...moduleNames, userCode) at line 166 of ns_gm_restlet.js. User code receives modules as positional function parameters. Swapping a real module object with a proxy wrapper in the moduleParamValues array (lines 115-125) means user code calls proxy methods (e.g., record.save()) thinking they are real, while the proxy intercepts write operations and captures before/after state without committing.",
+      "evidence": [
+        "ns_gm_restlet.js line 166: const executionFunction = new Function(...moduleNames, userCode)",
+        "ns_gm_restlet.js line 169: const finalResult = executionFunction(...moduleValues)",
+        "ns_gm_restlet.js lines 115-125: moduleParamNames/moduleParamValues arrays built dynamically from requestedModules"
+      ]
+    },
+    {
+      "answer": "YES — the architecture fully supports transparent substitution. User code does not import modules directly; it receives them as function parameters. The user code has no way to detect whether it received a real N/record module or a proxy wrapper, as long as the proxy exposes the same API surface.",
+      "evidence": [
+        "ns_gm_restlet.js lines 62-68: userCode and requestedModules extracted from request payload",
+        "ns_gm_restlet.js lines 71-96: moduleMap maps short names to real module references",
+        "ns_gm_restlet.js line 166: new Function() creates function with module names as parameter names"
+      ]
+    },
+    {
+      "answer": "The substitution point is the moduleParamValues array (lines 115-125). For each requested module, loadModule() fetches the real module from moduleMap and pushes it into moduleParamValues. For a dry-run action, the 'record' entry (and optionally 'transaction') would be replaced with a proxy wrapper object before the array is passed to safeExecute(). This requires adding an else-if branch for action === 'dry-run' in the post() dispatcher (lines 23-37).",
+      "evidence": [
+        "ns_gm_restlet.js lines 118-124: for loop builds moduleParamValues from loadModule()",
+        "ns_gm_restlet.js line 131: safeExecute(userCode, moduleParamNames, moduleParamValues) receives the arrays"
+      ]
+    },
+    {
+      "answer": "Proxy CAN capture: record.load() passes through to real module and captures field values as 'before' state; record.save() intercepted to capture modified fields as 'after' state without committing; record.create()+save() captures set values; record.submitFields() captures intended changes; record.delete() captures target record state. Proxy CANNOT capture: NetSuite-side effects (workflows, UserEventScripts, formula recalculations), sublist fields without known sublist IDs, nested operations inside record.transform() callbacks, or N/transaction.void() (deferred to Round 2).",
+      "evidence": [
+        "Prior tech-research (cmnqr8lkk): detailed proxy behavior table for each N/record method",
+        "Prior diagnosis (cmnrx64kr): confirmed proxy captures before/after field state via getFields()"
+      ]
+    },
+    {
+      "answer": "YES — two prior tickets have thoroughly researched this. Ticket cmnqr8lkk evaluated six approaches and recommended Approach B (Two-Phase RESTlet with Module Proxy). Ticket cmnrx64kr confirmed proxy viability and produced detailed implementation specs. Both concluded LOW regression risk for non-Helix users because new actions are additive else-if branches.",
+      "evidence": [
+        "ns-gm/.helix/tickets/cmnqr8lkk000hiq0usgmitppy/runs/cmnrnux2g00ftiq0u170yikyj/tech-research/tech-research.md: Approach B chosen, detailed proxy spec",
+        "ns-gm/.helix/tickets/cmnrx64kr0012hu0upcwaset3/runs/cmnrx64l60018hu0ul4cw7t1d/diagnosis/diagnosis-statement.md: Proxy viability confirmed, LOW regression risk"
+      ]
+    },
+    {
+      "answer": "TicketMode.EXECUTE is defined in the Prisma schema (line 104) with migration 20260408000000_add_ticket_mode already applied, but 0 EXECUTE-mode tickets exist in production. 10 NsGmCredential records exist across 5 organizations (each with SANDBOX + PRODUCTION environment pairs). No proxy/dry-run code has been implemented in any repository yet.",
+      "evidence": [
+        "Production DB: SELECT mode, COUNT(*) FROM Ticket GROUP BY mode → 0 EXECUTE tickets (221 total: 201 AUTO, 9 RESEARCH, 8 FIX, 3 BUILD)",
+        "Production DB: SELECT * FROM NsGmCredential → 10 records across 5 organizations",
+        "prisma/schema.prisma line 104: EXECUTE enum value defined",
+        "Production logs: no dry-run or execute-approved activity found"
+      ]
+    }
+  ],
+  "statement": "Proxy modules CAN intercept what actually gets sent to NetSuite. The RESTlet's new Function(...moduleNames, userCode) pattern at line 166 of ns_gm_restlet.js enables transparent module substitution by swapping entries in the moduleParamValues array (lines 115-125) before execution. Read operations pass through to real modules returning real data; write operations are intercepted to capture before/after state without committing. This is NOT limited to capturing user input — the proxy gets access to real record data from NetSuite. Two prior research tickets (cmnqr8lkk, cmnrx64kr) have already validated Approach B (Two-Phase RESTlet with Module Proxy) as the recommended path. No proxy code exists yet in any repo. Implementation scope spans ns-gm (RESTlet + Express proxy) and helix-global-server (duplicate RESTlet copy + orchestrator EXECUTE-mode logic).",
+  "followups": []
+}
