@@ -1,0 +1,59 @@
+{
+  "problem": "The ns-gm CLI provides runtime inspection capabilities for NetSuite environments (execute SuiteScript code, retrieve script execution logs). For the 'Monitoring with Auto Solve' feature, ns-gm is the tool through which the monitoring agent will probe NetSuite production environments to check monitoring plan conditions (log patterns, record states, governance usage).",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "NetSuite RESTlet that handles 'run' (execute SuiteScript) and 'getscriptexecutionlogs' (retrieve logs) actions. The monitoring agent will use both actions. The RESTlet provides governance tracking (initial/remaining/used) and all major NS modules (search, query, record, runtime, log, etc.)."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Local Express proxy with /run, /logs, /health endpoints. Routes requests to the NetSuite RESTlet via OAuth 2.0 authentication. The monitoring agent calls these endpoints."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M token management with JWT client assertion. Handles token caching and refresh. Monitoring requires authenticated access to NetSuite."
+    },
+    {
+      "path": "src/commands/logs.js",
+      "why": "CLI logs command with filtering (date range, log type, script ID, pagination). The monitoring agent will query logs to check for expected positive/negative patterns."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "CLI run command for executing SuiteScript. The monitoring agent can run custom SuiteScript to check record states, search for specific conditions, or verify business logic."
+    },
+    {
+      "path": "src/commands/env.js",
+      "why": "Environment detection (SANDBOX vs PRODUCTION). Monitoring should verify it is checking the production environment, not sandbox."
+    },
+    {
+      "path": "src/utils/profileStore.js",
+      "why": "Credential storage and retrieval. Multi-profile support allows pointing to different NS environments. The server manages NS-GM credentials via NsGmCredential model."
+    },
+    {
+      "path": "CLAUDE.md",
+      "why": "Agent guidance document describing core architecture, credential model, and command surface."
+    },
+    {
+      "path": "package.json",
+      "why": "Dependencies: axios, commander, express, jose, prompts. Scripts: start (node src/cli.js). No build/lint/test scripts."
+    }
+  ],
+  "facts": [
+    "ns-gm is a CLI + local Express proxy that routes requests to a NetSuite RESTlet via OAuth 2.0 M2M authentication.",
+    "Two main actions: 'run' (execute arbitrary SuiteScript with module injection) and 'getscriptexecutionlogs' (retrieve NS script execution logs with filtering).",
+    "Available NS modules for code execution: log, search, record, runtime, format, query, transaction, file, https, http, email, error, url, encode, crypto, currency, render, xml, config, task, redirect, cache, certificateControl, workflow.",
+    "Log retrieval supports filtering by: date range (dateFrom/dateTo), log type (DEBUG, AUDIT, ERROR, EMERGENCY), script ID, pagination (pageIndex/pageSize).",
+    "Governance tracking: every response includes initial, remaining, and used governance units.",
+    "Multi-profile credential storage at ~/.ns-gm/credentials.json. Profiles are alias-based and can point to different NS environments (SANDBOX/PRODUCTION).",
+    "The helix-global-server manages NS-GM credentials per-organization via NsGmCredential model with encrypted private keys. The server can prepare NS-GM credentials for sandbox execution (prepareNsGmCredential in ns-gm-credentials.ts).",
+    "No existing monitoring, scheduling, or agent infrastructure in ns-gm. It is a stateless CLI tool.",
+    "No build/lint/test/typecheck scripts defined in package.json. Plain JavaScript (not TypeScript).",
+    "Proxy inactivity timeout: 15 minutes (config.json). Server listens on port 9292."
+  ],
+  "unknowns": [
+    "Whether ns-gm needs any new commands or capabilities for monitoring, or if the existing 'run' and 'logs' commands are sufficient for the monitoring agent to probe NetSuite production environments.",
+    "Whether governance limits on the RESTlet could constrain intensive monitoring queries. Each request has a governance budget.",
+    "Whether the monitoring agent will use ns-gm directly (CLI invocation) or whether the server will incorporate ns-gm's functionality server-side for monitoring checks.",
+    "Whether log retrieval pagination and date filtering are sufficient for the monitoring agent's needs, or if additional filtering (e.g., by custom log tags) would be needed."
+  ]
+}
