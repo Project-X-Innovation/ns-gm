@@ -1,0 +1,66 @@
+{
+  "problem": "ns-gm is the execution vehicle for NetSuite record changes in execute mode. The RESTlet currently supports arbitrary SuiteScript execution but has no approval intercept mechanism. The ticket proposes a beforeSubmit UserEventScript that checks with Helix mainland before allowing record saves — this would be a new SuiteScript deployment alongside the existing RESTlet.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "The NetSuite RESTlet that executes arbitrary SuiteScript 2.1 code via new Function(). Currently handles 'run' and 'getscriptexecutionlogs' actions. This is the primary execution vehicle — scripts proposed by the agent would be run through this RESTlet. Lines 45-154 handle code execution with all 24 N/* modules injected.",
+      "lines": "1-452"
+    },
+    {
+      "path": "server/app.js",
+      "why": "Local Express proxy with /run and /logs endpoints. Scripts are sent to NetSuite via POST /run. Execute mode would use this same pathway to submit approved scripts.",
+      "lines": "35-86"
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M authentication for RESTlet access. Same auth mechanism needed for any new NetSuite scripts (beforeSubmit, Suitelet) that need to call back to Helix.",
+      "lines": "1-217"
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "CLI run command that sends code to proxy. Shows the execution flow from CLI -> proxy -> RESTlet. Execute mode's deterministic program would follow a similar code submission path.",
+      "lines": "1-119"
+    },
+    {
+      "path": "src/utils/config.js",
+      "why": "Configuration loader (port, settings). May need extension for execute-mode-specific config.",
+      "lines": "1-40"
+    },
+    {
+      "path": "CLAUDE.md",
+      "why": "Project identity and architecture documentation. Core architecture: CLI -> local Express proxy -> NetSuite RESTlet.",
+      "lines": "1-107"
+    },
+    {
+      "path": "Blueprints/product.md",
+      "why": "Product definition for ns-gm. Establishes the tool's purpose and user base."
+    },
+    {
+      "path": "package.json",
+      "why": "Dependencies (axios, commander, express, jose). No database, no ORM, no build step, no test commands.",
+      "lines": "1-53"
+    }
+  ],
+  "facts": [
+    "ns-gm RESTlet executes arbitrary SuiteScript 2.1 via new Function() with 24 injected N/* modules including N/record, N/transaction, N/workflow (ns_gm_restlet.js line 166)",
+    "RESTlet only handles two actions: 'run' (execute code) and 'getscriptexecutionlogs' (retrieve logs). No approval, intercept, or validation actions exist.",
+    "The RESTlet is deployed as @NScriptType Restlet with @NModuleScope Public (ns_gm_restlet.js lines 2-4)",
+    "Local proxy runs on port 9292 (configurable) with Express. Endpoints: GET /health, POST /run, POST /logs (server/app.js)",
+    "Authentication is OAuth 2.0 Client Credentials with JWT client assertion using PS256 (server/auth.js)",
+    "ns-gm has no communication channel back to Helix mainland server — all communication is outbound to NetSuite",
+    "No database, no ORM, no migrations. Credential storage is file-based (~/.ns-gm/credentials.json)",
+    "No build step (raw JS), no test commands. Only eslint and prettier as dev dependencies.",
+    "The RESTlet returns execution result, execution time, and governance metrics (remaining usage units)",
+    "The ns-gm CLI is installed in Helix workflow sandboxes via installNsGmCli (referenced in helix-global-server orchestrator)"
+  ],
+  "unknowns": [
+    "Can a NetSuite beforeSubmit UserEventScript reliably make synchronous HTTP calls to an external service (Helix mainland) within governance limits? N/https.post is available but governance units and timeout constraints apply.",
+    "What is the governance unit cost of N/https calls in a beforeSubmit context? RESTlet governance tracking shows initial/remaining/used but UserEventScript has different limits.",
+    "Should the approval intercept be a beforeSubmit UserEventScript, a Workflow Action Script, a Suitelet, or some other SuiteScript type?",
+    "How would a new UserEventScript be deployed to customer NetSuite accounts? Currently ns-gm only deploys its RESTlet. SDF deployment exists in the native-phase but for different repo types.",
+    "Can a beforeSubmit script differentiate between Helix-initiated record saves and user-initiated saves? Integration context or custom field marker needed.",
+    "How would the approval script identify 'these exact changes' for comparison? Record field-level diff in beforeSubmit context needs investigation of available APIs.",
+    "What happens to the RESTlet's remaining governance when it submits a record that triggers a beforeSubmit which makes an external HTTP call? Governance chaining is a known NetSuite complexity.",
+    "Would a companion Suitelet (for approval UI within NetSuite itself) be needed alongside or instead of the Helix mainland approval UI?"
+  ]
+}
