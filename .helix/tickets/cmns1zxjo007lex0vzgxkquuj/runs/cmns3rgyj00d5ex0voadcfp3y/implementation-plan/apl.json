@@ -1,0 +1,46 @@
+{
+  "questions": [
+    "Q1: What sections should the research report contain to fully answer the user's refined question about keeping the real NetSuite module while intercepting at the write boundary?",
+    "Q2: What data sources are needed to produce an evidence-backed, accurate report?",
+    "Q3: How should the report structure balance technical depth with readability for the primary audience (user/developer)?",
+    "Q4: What runtime data should be gathered to strengthen the report's claims about infrastructure readiness?"
+  ],
+  "answers": [
+    {
+      "answer": "The report requires 12+ sections: Executive Summary, Problem Evolution, Architecture Decision (4 options considered), Three Interception Levels (table), Two-Level Proxy Pattern (module handler + record instance handler + injection point), Field Capture Strategy (body fields + sublists), Change Summary Format (JSON schema + example), New RESTlet Actions (dry-run + execute-approved), New Express Endpoints (POST /dry-run + POST /execute), Cross-Repo Coordination (helix-global-server sync + deployment sequence), Risks and Open Questions (8 risks), Implementation Roadmap (6 sequenced steps), and Artifact Inputs Used.",
+      "evidence": [
+        "ns-gm/product/product.md: defines MVP scope with dry-run/execute-approved flow, write-boundary interception, record instance Proxy chaining, comprehensive field dump",
+        "ns-gm/tech-research/tech-research.md: contains full architecture decision, Proxy handler tables, field capture strategy, 8 open risks, deferred Round 2 items",
+        "ns-gm/diagnosis/diagnosis-statement.md: three interception levels, ES6 Proxy confirmation, comparison table vs module replacement",
+        "User continuation context: 'Keep the NetSuite module, not our own version, all the code that actually runs, but just hijack it at the end'"
+      ]
+    },
+    {
+      "answer": "Eight prior artifacts provide the primary data: scout summary/reference-map (architecture analysis), diagnosis statement/APL (ES6 Proxy confirmation), product spec (MVP scope), tech-research doc/APL (full architecture + handler design). Two source code files (ns_gm_restlet.js, server/app.js) provide code-level verification. Runtime inspection provides credential infrastructure confirmation. The helix-global-server product and tech-research docs provide cross-repo context.",
+      "evidence": [
+        "All artifacts confirmed readable during implementation-plan step",
+        "ns_gm_restlet.js: 452 lines, confirms module injection at lines 115-125, dispatcher at lines 23-37",
+        "server/app.js: 154 lines, confirms POST /run pattern at lines 35-86",
+        "/tmp/helix-inspect/manifest.json: DATABASE and LOGS types available for helix-global-server"
+      ]
+    },
+    {
+      "answer": "The report should lead with a direct answer to the user's question (Executive Summary), then build technical depth progressively: problem evolution → architecture decision → core pattern → implementation details → risks → roadmap. Tables and ASCII diagrams aid comprehension. Target 3,000-6,000 words — long enough for completeness, short enough for a single reading session.",
+      "evidence": [
+        "User's question is concrete and specific — demands a direct yes/no answer with technical backing",
+        "Tech-research doc is ~6,000 words with dense tables — report should synthesize, not duplicate",
+        "Prior research iterations show progressive refinement — report must capture the evolution narrative"
+      ]
+    },
+    {
+      "answer": "Runtime inspection should verify the NsGmCredential record count (10 records, 5 organizations) cited in the tech-research artifacts. This strengthens the 'infrastructure ready' claim in the Cross-Repo Coordination section. The DATABASE type is available via /tmp/helix-inspect/manifest.json for helix-global-server.",
+      "evidence": [
+        "helix-global-server/tech-research/tech-research.md: '10 records across 5 organizations confirmed via runtime database inspection'",
+        "/tmp/helix-inspect/manifest.json: helix-global-server has DATABASE type available",
+        "Credential infrastructure readiness is a key claim supporting the deployment sequence in the roadmap"
+      ]
+    }
+  ],
+  "statement": "The implementation plan directs the assembly of a comprehensive research report (report/report.md) that synthesizes all prior research artifacts into a single authoritative document. The report answers the user's refined question ('Can we keep the real NetSuite module and intercept at the write boundary?') with the ES6 Proxy wrapping approach. Nine atomic steps gather data, verify source code references, assemble 12+ report sections progressively, and validate internal consistency. Verification checks confirm file existence, code reference accuracy, artifact consistency, runtime data accuracy, and report actionability. No code changes are produced.",
+  "followups": []
+}
