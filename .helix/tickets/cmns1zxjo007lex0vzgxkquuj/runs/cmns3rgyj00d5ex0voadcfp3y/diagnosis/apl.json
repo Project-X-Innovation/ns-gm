@@ -1,60 +1,54 @@
 {
   "questions": [
-    "Q1: Can proxy modules intercept what actually gets sent to NetSuite, or are they limited to capturing user input?",
-    "Q2: Does the RESTlet architecture support transparent module substitution without changing how user code works?",
-    "Q3: What is the substitution mechanism and where exactly in the code does it occur?",
-    "Q4: What can and cannot be captured by proxy modules during a dry-run?",
-    "Q5: Has this approach already been researched and validated in prior work?",
-    "Q6: What is the current production state of EXECUTE mode and NsGmCredential infrastructure?"
+    "Q1: Can we keep the REAL NetSuite module running (not replace it with our own) and still observe what happens at the write boundary?",
+    "Q2: Is ES6 Proxy available in SuiteScript 2.1, enabling transparent wrapping of N/* module objects?",
+    "Q3: What is the deepest interception level achievable: (a) without side effects and (b) with side effects?",
+    "Q4: Is there a mechanism to capture post-processing state (field validation, defaults, sourcing, formulas) without committing to the database?",
+    "Q5: How does ES6 Proxy wrapping differ from the previously proposed module-replacement approach (Approach B)?"
   ],
   "answers": [
     {
-      "answer": "YES — proxy modules can intercept actual NetSuite operations, not just user input. The RESTlet creates execution functions via new Function(...moduleNames, userCode) at line 166 of ns_gm_restlet.js. User code receives modules as positional function parameters. Swapping a real module object with a proxy wrapper in the moduleParamValues array (lines 115-125) means user code calls proxy methods (e.g., record.save()) thinking they are real, while the proxy intercepts write operations and captures before/after state without committing.",
+      "answer": "YES — using ES6 Proxy wrapping inside the RESTlet. Instead of replacing the N/record module with a custom implementation, wrap it in `new Proxy(realModule, handler)` at the moduleParamValues substitution point (lines 115-125). The Proxy passes ALL operations through to the real module. User code receives the real module's behavior — real creates, real loads, real field sourcing, real validation. The Proxy's get trap adds observation hooks only at write-boundary methods (save, submitFields, delete). This answers the user's exact ask: 'keep the NetSuite module, not our own version, all the code that actually runs in the NetSuite module, but just hijack it at the end.'",
       "evidence": [
-        "ns_gm_restlet.js line 166: const executionFunction = new Function(...moduleNames, userCode)",
-        "ns_gm_restlet.js line 169: const finalResult = executionFunction(...moduleValues)",
-        "ns_gm_restlet.js lines 115-125: moduleParamNames/moduleParamValues arrays built dynamically from requestedModules"
+        "ns_gm_restlet.js lines 115-125: moduleParamValues array is the injection point — wrap moduleObj in Proxy before pushing",
+        "ns_gm_restlet.js line 166: new Function(...moduleNames, userCode) — user code cannot distinguish a Proxy-wrapped module from the real one",
+        "ns_gm_restlet.js line 169: executionFunction(...moduleValues) passes modules as positional args"
       ]
     },
     {
-      "answer": "YES — the architecture fully supports transparent substitution. User code does not import modules directly; it receives them as function parameters. The user code has no way to detect whether it received a real N/record module or a proxy wrapper, as long as the proxy exposes the same API surface.",
+      "answer": "YES — confirmed. SuiteScript 2.1 runs on GraalJS (ES2019+/ES2023). ES6 Proxy was introduced in ES2015 and is fully supported by GraalJS. Real-world usage confirmed: developer Marty Y. Chang's article describes wrapping context.newRecord and context.oldRecord inside Proxy objects in SuiteScript 2.1 User Event Scripts. No NetSuite documentation restricts Proxy usage in server-side scripts. CAVEAT: Not empirically verified against N/* module objects specifically (which are Java-backed in GraalJS). This needs a runtime test via ns-gm.",
       "evidence": [
-        "ns_gm_restlet.js lines 62-68: userCode and requestedModules extracted from request payload",
-        "ns_gm_restlet.js lines 71-96: moduleMap maps short names to real module references",
-        "ns_gm_restlet.js line 166: new Function() creates function with module names as parameter names"
+        "Web search: 'SuiteScript 2.1—not 2.0—makes this all possible' regarding Proxy-wrapped record objects (medium.com/@martyychang)",
+        "Web search: 'GraalVM runtime engine, supporting ECMAScript 2023' (netsuite.com SuiteScript 2.1 article)",
+        "Oracle docs: 'SuiteScript 2.1 runs on the GraalVM runtime engine' (docs.oracle.com/en/cloud/saas/netsuite)",
+        "GraalJS documentation: full ES2015+ support including Proxy; Java host object interop is generally transparent"
       ]
     },
     {
-      "answer": "The substitution point is the moduleParamValues array (lines 115-125). For each requested module, loadModule() fetches the real module from moduleMap and pushes it into moduleParamValues. For a dry-run action, the 'record' entry (and optionally 'transaction') would be replaced with a proxy wrapper object before the array is passed to safeExecute(). This requires adding an else-if branch for action === 'dry-run' in the post() dispatcher (lines 23-37).",
+      "answer": "(a) Without side effects (Enhanced Level 2): Proxy wraps the real module. All reads and in-memory operations execute on the REAL module. When user code calls record.create(), the real N/record.create() runs, returning a real Record instance (which itself gets Proxy-wrapped). All setValue/getText/getFields calls execute on the real record instance. When save() is called, the Proxy's get trap intercepts it. Before delegating to the real save, the interceptor captures a comprehensive field dump: getFields() for all field IDs, getValue()/getText() on each field, getLineCount()/getSublistValue() on sublists. This state reflects the real module's in-memory processing (field sourcing, dependent field population, in-memory validation) because the real module ran those operations. The save call is then BLOCKED — no commit, no side effects. (b) With side effects (True Level 3): Same Proxy setup, but let save() execute on the real module. After it returns, record.load() the saved record to see what NetSuite persisted post-validation, post-sourcing, post-defaults, post-formula-recalc. This captures post-processing state but commits data and fires workflows/UES.",
       "evidence": [
-        "ns_gm_restlet.js lines 118-124: for loop builds moduleParamValues from loadModule()",
-        "ns_gm_restlet.js line 131: safeExecute(userCode, moduleParamNames, moduleParamValues) receives the arrays"
+        "Scout reference-map.json (ns-gm) fact: 'When record.save() is called, field validation, mandatory field checks, default value population, formula recalculations, sourcing happen inside NetSuite's opaque runtime'",
+        "SuiteScript sourcing behavior: when setValue() is called on a body field with sourcing configured, dependent fields are populated immediately in-memory — observable via getValue() before save()",
+        "Scout reference-map.json (ns-gm) fact: 'N/transaction module has no explicit rollback API for RESTlet contexts' — no undo after real save"
       ]
     },
     {
-      "answer": "Proxy CAN capture: record.load() passes through to real module and captures field values as 'before' state; record.save() intercepted to capture modified fields as 'after' state without committing; record.create()+save() captures set values; record.submitFields() captures intended changes; record.delete() captures target record state. Proxy CANNOT capture: NetSuite-side effects (workflows, UserEventScripts, formula recalculations), sublist fields without known sublist IDs, nested operations inside record.transform() callbacks, or N/transaction.void() (deferred to Round 2).",
+      "answer": "NO clean mechanism. NetSuite's processing happens in two phases: (1) In-memory phase — some sourcing and dependent field population happens immediately when setValue() is called on a live record instance. This IS capturable by reading the record before save. (2) Commit phase — final mandatory checks, formula recalculations, server-side defaults happen inside record.save()'s internal JVM call. This is NOT capturable without letting save execute or deploying a companion beforeSubmit UES. KEY INSIGHT: Phase 1 in-memory state is ALREADY substantially richer than user-input capture because the real module ran its processing. The Proxy approach captures this without side effects, which is what the user is asking for — 'what NetSuite actually gets after it runs its own version of the modules.'",
       "evidence": [
-        "Prior tech-research (cmnqr8lkk): detailed proxy behavior table for each N/record method",
-        "Prior diagnosis (cmnrx64kr): confirmed proxy captures before/after field state via getFields()"
+        "Scout fact: 'beforeSubmit UserEventScript (UES) is the only NetSuite-native interception point that fires AFTER the record is assembled for save but BEFORE committed'",
+        "Scout fact: prior research rejected UES (Approach A) due to governance chaining risk: RESTlet -> save() -> UES -> N/https.post()",
+        "Scout reference-map.json (ns-gm): 'The proxy's read operations delegate to the real module, but write operations are intercepted BEFORE the real module's write code runs'"
       ]
     },
     {
-      "answer": "YES — two prior tickets have thoroughly researched this. Ticket cmnqr8lkk evaluated six approaches and recommended Approach B (Two-Phase RESTlet with Module Proxy). Ticket cmnrx64kr confirmed proxy viability and produced detailed implementation specs. Both concluded LOW regression risk for non-Helix users because new actions are additive else-if branches.",
+      "answer": "Prior Approach B (module replacement) substitutes the entire N/record module with a custom object that mimics the real module's API. Our new approach wraps the REAL module in a Proxy. The differences: (1) All method behavior is real, not simulated — record.create() is the actual NetSuite function. (2) In-memory processing (sourcing, dependent fields) runs naturally because it's the real module. (3) No risk of missing API methods — the Proxy passes through everything not explicitly intercepted. (4) Record instances are real NetSuite Record objects, not custom replicas. (5) The only 'custom' code is the Proxy handler's get trap on save/submitFields/delete. This is a strict improvement over Approach B: same observability, higher fidelity, less code to maintain.",
       "evidence": [
-        "ns-gm/.helix/tickets/cmnqr8lkk000hiq0usgmitppy/runs/cmnrnux2g00ftiq0u170yikyj/tech-research/tech-research.md: Approach B chosen, detailed proxy spec",
-        "ns-gm/.helix/tickets/cmnrx64kr0012hu0upcwaset3/runs/cmnrx64l60018hu0ul4cw7t1d/diagnosis/diagnosis-statement.md: Proxy viability confirmed, LOW regression risk"
-      ]
-    },
-    {
-      "answer": "TicketMode.EXECUTE is defined in the Prisma schema (line 104) with migration 20260408000000_add_ticket_mode already applied, but 0 EXECUTE-mode tickets exist in production. 10 NsGmCredential records exist across 5 organizations (each with SANDBOX + PRODUCTION environment pairs). No proxy/dry-run code has been implemented in any repository yet.",
-      "evidence": [
-        "Production DB: SELECT mode, COUNT(*) FROM Ticket GROUP BY mode → 0 EXECUTE tickets (221 total: 201 AUTO, 9 RESEARCH, 8 FIX, 3 BUILD)",
-        "Production DB: SELECT * FROM NsGmCredential → 10 records across 5 organizations",
-        "prisma/schema.prisma line 104: EXECUTE enum value defined",
-        "Production logs: no dry-run or execute-approved activity found"
+        "Prior tech-research (cmnqr8lkk): Approach B required custom implementation of record.create, record.load, record.save, etc.",
+        "Proxy approach: only needs handler traps for 3 write methods; all other methods pass through to real module automatically",
+        "User continuation context: 'keep the NetSuite module, not our own version of the module, all the code that actually runs in the NetSuite module'"
       ]
     }
   ],
-  "statement": "Proxy modules CAN intercept what actually gets sent to NetSuite. The RESTlet's new Function(...moduleNames, userCode) pattern at line 166 of ns_gm_restlet.js enables transparent module substitution by swapping entries in the moduleParamValues array (lines 115-125) before execution. Read operations pass through to real modules returning real data; write operations are intercepted to capture before/after state without committing. This is NOT limited to capturing user input — the proxy gets access to real record data from NetSuite. Two prior research tickets (cmnqr8lkk, cmnrx64kr) have already validated Approach B (Two-Phase RESTlet with Module Proxy) as the recommended path. No proxy code exists yet in any repo. Implementation scope spans ns-gm (RESTlet + Express proxy) and helix-global-server (duplicate RESTlet copy + orchestrator EXECUTE-mode logic).",
+  "statement": "The user's question — can we keep the real NetSuite module and intercept what actually gets sent to NetSuite — is achievable using ES6 Proxy wrapping inside the RESTlet. SuiteScript 2.1 runs on GraalJS (ES2019+/ES2023), and ES6 Proxy is confirmed available by real-world developer usage in SuiteScript contexts. The approach: wrap the real N/record module in a Proxy before passing it to user code via moduleParamValues[] (lines 115-125 of ns_gm_restlet.js). The Proxy's get trap intercepts write-boundary methods (save, submitFields, delete) while passing ALL other operations through to the real module. Before the real write executes, the interceptor captures a comprehensive field dump from the live Record instance — this state reflects the real module's in-memory processing (sourcing, dependent field population, field-level validation) because the real module ran those operations. This is a strict improvement over the prior Approach B (module replacement): same observability, higher fidelity, less custom code. True post-commit state (mandatory checks, formula recalcs, server-side defaults) requires either letting save() execute with side effects or deploying a companion beforeSubmit UES. The Proxy approach captures in-memory state without side effects, which is substantially richer than user-input capture. Key remaining unknown: empirical verification that Proxy works correctly on GraalJS Java-backed N/* module objects (requires a runtime test).",
   "followups": []
 }
