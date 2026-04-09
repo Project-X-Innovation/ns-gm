@@ -1,0 +1,46 @@
+{
+  "questions": [
+    "How should the ns-gm RESTlet be extended to support dry-run change capture without committing?",
+    "What N/record methods must the module proxy intercept to capture all write operations?",
+    "How should the approval token be validated to authorize execute-approved runs?",
+    "How can before-state field values be captured when the record's field IDs are not known in advance?"
+  ],
+  "answers": [
+    {
+      "answer": "The RESTlet is extended with two new actions in the post() handler (line 23): 'dry-run' and 'execute-approved'. The dry-run action creates a proxied N/record module that intercepts write operations (save, submit, submitFields, delete) and captures before/after state without committing. All other modules are passed through unmodified. The proxy is created within the RESTlet because that's where the real N/record module is instantiated (lines 70-96 moduleMap). The new Function() call at line 166 already receives modules as arguments — passing proxied modules requires no architectural change. The execute-approved action is functionally identical to run but includes an approval token for server-side verification.",
+      "evidence": [
+        "ns_gm_restlet.js line 166: 'const executionFunction = new Function(...moduleNames, userCode)' — modules passed as function arguments",
+        "ns_gm_restlet.js lines 70-96: moduleMap with 24 N/* modules including record, transaction, workflow",
+        "ns_gm_restlet.js lines 23-37: post() handler routes on action — adding new actions follows existing pattern",
+        "ns_gm_restlet.js lines 46-48: governance tracking already in place — dry-run can reuse this"
+      ]
+    },
+    {
+      "answer": "Core methods to intercept: (1) record.load() — pass through but capture loaded field values as before-state, (2) Record.prototype.save() — intercept, capture field values as after-state, return placeholder ID, do NOT commit, (3) record.submitFields() — intercept, capture type/id/values, return record ID, do NOT save, (4) record.delete() — intercept, capture delete intent, do NOT delete, (5) record.create() — pass through (creates in-memory record), (6) record.copy() / record.transform() — pass through but capture source state. All read methods (getValue, getText, getSublistValue, getLineCount, getField, getFields) pass through unmodified. Other N/* modules (search, query, https, log, etc.) pass through entirely. N/transaction.void() is deferred to Round 2.",
+      "evidence": [
+        "NetSuite N/record module docs: record.load, record.create, record.copy, record.transform, record.delete, record.submitFields are the module-level methods",
+        "NetSuite Record object docs: save() and getFields() are the key instance methods",
+        "ns_gm_restlet.js line 73: 'record': record in moduleMap — the module is directly available for wrapping",
+        "SuiteScript 2.1 code samples (Context7): record.create().setValue().save() is the standard write pattern; record.submitFields() is the lightweight alternative"
+      ]
+    },
+    {
+      "answer": "Server-side validation only — the RESTlet does NOT validate the token. The execute-approved action is functionally identical to the run action. The token is included in the request payload and echoed in the response. The security gate is the Helix server's NsExecuteService, which is the sole code path that can invoke execute-approved. This approach keeps the RESTlet simple (no secrets, no HMAC logic, no N/crypto calls), maintains the clear security boundary at the server level, and avoids the operational complexity of provisioning shared secrets to customer NetSuite accounts.",
+      "evidence": [
+        "ns-gm scout: 'ns-gm communicates only outbound (Helix -> NS via RESTlet). No mechanism for NS to call back to Helix' — no reverse channel for token verification",
+        "ticket.md: 'All real live changes must be deployed by a deterministic program that a human can approve of' — the deterministic program is NsExecuteService on the server",
+        "server/auth.js: OAuth 2.0 M2M already secures the RESTlet communication channel — the token is an additional application-level check at the server layer"
+      ]
+    },
+    {
+      "answer": "Three-layer approach: (1) Body fields: N/record provides Record.getFields() which returns an array of body field IDs for the loaded record. Iterate these to capture values via getValue() and getText(). This works for all record types. (2) Common sublists: For transaction records, attempt to read standard sublist IDs (item, expense, line, partner, salesteam) using getLineCount(). If lineCount > 0, iterate lines capturing known column fields. Catch errors for non-existent sublists. (3) Agent hints: The dry-run request context can include targetSublistIds if the agent knows which sublists the script modifies. The proxy prioritizes these. Future: maintain a record-type-to-sublist metadata mapping.",
+      "evidence": [
+        "NetSuite N/record docs: 'Record.getFields() — Returns the body field IDs on the record'",
+        "SuiteScript samples (Context7): getLineCount('item'), getSublistValue({sublistId, fieldId, line}) are standard patterns for reading sublist data",
+        "ns_gm_restlet.js lines 63-68: requestedModules pattern shows precedent for configurable behavior per request — same approach for targetSublistIds"
+      ]
+    }
+  ],
+  "statement": "The ns-gm RESTlet is extended with two new actions (dry-run and execute-approved) following the existing action routing pattern. The dry-run action uses a proxied N/record module that intercepts write operations (save, submit, submitFields, delete) to capture before/after state without committing. All other modules pass through unmodified. Field discovery uses Record.getFields() for body fields plus common sublist enumeration and agent hints. The execute-approved action is functionally identical to run with a server-side-validated approval token. The RESTlet itself handles no token cryptography — security is enforced at the Helix server layer. No new NetSuite scripts are deployed.",
+  "followups": []
+}
