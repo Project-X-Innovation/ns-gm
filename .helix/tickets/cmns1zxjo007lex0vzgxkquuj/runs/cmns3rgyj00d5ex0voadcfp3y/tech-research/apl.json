@@ -1,0 +1,72 @@
+{
+  "questions": [
+    "Q1: What is the correct architecture for proxy module substitution — where does the proxy live and how does it intercept?",
+    "Q2: Which N/* modules need proxying, and which methods require interception vs. pass-through?",
+    "Q3: How should the dry-run change summary be structured to enable a human-readable before/after preview?",
+    "Q4: How should approval tokens be validated — RESTlet-side or server-side?",
+    "Q5: What are the governance budget implications of dry-run field capture?",
+    "Q6: What new Express proxy endpoints are needed and how do they follow existing patterns?",
+    "Q7: How should the duplicate RESTlet in helix-global-server be coordinated?"
+  ],
+  "answers": [
+    {
+      "answer": "The proxy lives inside the RESTlet (ns_gm_restlet.js), not the Express proxy. The substitution point is the moduleParamValues[] array built at lines 115-125. For dry-run action, the 'record' entry is replaced with a proxy wrapper object before passing to safeExecute() at line 131. This works because new Function(...moduleNames, userCode) at line 166 passes modules as positional parameters — user code receives the proxy thinking it's the real N/record module.",
+      "evidence": [
+        "ns_gm_restlet.js line 166: const executionFunction = new Function(...moduleNames, userCode)",
+        "ns_gm_restlet.js line 169: const finalResult = executionFunction(...moduleValues)",
+        "ns_gm_restlet.js lines 115-125: moduleParamNames/moduleParamValues built dynamically from loadModule()",
+        "server/app.js: Express proxy is a pure pass-through with no access to N/* module objects"
+      ]
+    },
+    {
+      "answer": "Only N/record needs proxying for MVP. Of the 24 pre-loaded modules, only N/record contains write methods that modify records (save, submitFields, delete). N/transaction.void() is deferred to Round 2. All other modules are read-only, utility, or have side effects outside the record mutation scope. Write methods (save, submitFields, delete) are intercepted; read methods (load, getFields, getValue, getText, getSublistValue, etc.) pass through to real module returning real data.",
+      "evidence": [
+        "ns_gm_restlet.js lines 71-96: moduleMap contains 24 modules; record and transaction are the only ones with mutating record operations",
+        "Prior tech-research (cmnqr8lkk): N/transaction deferred to Round 2; focus on N/record write methods",
+        "SuiteScript 2.0 Typings (Context7): record.load(), record.getFields(), record.save() confirmed as core API"
+      ]
+    },
+    {
+      "answer": "The recordChanges array uses a structured format: { operation, recordType, recordId, before: { [fieldId]: { value, text } }, after: { [fieldId]: { value, text } }, sublists: { [sublistId]: { before, after } } }. Body fields are captured via getFields(). Sublist fields require agent-provided targetSublistIds or enumeration of common sublist IDs. This format enables the server to produce a human-readable diff.",
+      "evidence": [
+        "Prior tech-research (cmnqr8lkk): detailed capture spec for each N/record method",
+        "SuiteScript 2.0 Typings: record.getFields() returns array of body field IDs",
+        "Prior diagnosis (cmnrx64kr): confirmed before/after capture via getFields() + getValue()/getText()"
+      ]
+    },
+    {
+      "answer": "Server-side validation only. The RESTlet's execute-approved action is functionally identical to 'run' — it echoes the approvalToken in the response. The Helix server validates the token, confirming the correct approved script ran. This avoids embedding shared secrets in the RESTlet.",
+      "evidence": [
+        "Prior tech-research (cmnqr8lkk): evolved from HMAC-in-RESTlet to server-side-only validation",
+        "server/auth.js: OAuth 2.0 M2M already provides authenticated channel — RESTlet runs in trusted context",
+        "RESTlet is already behind OAuth 2.0 auth — additional token validation in RESTlet adds complexity without security gain"
+      ]
+    },
+    {
+      "answer": "The 5,000-unit governance budget is sufficient for typical agent scripts (1-5 records). N/record.load costs 5-10 units; getFields() is 0 units (in-memory). A safety threshold of 200 remaining units should trigger abort with partial results. The existing governance tracking at lines 47-48 (runtime.getCurrentScript().getRemainingUsage()) provides the mechanism.",
+      "evidence": [
+        "ns_gm_restlet.js lines 47-48: initialGovernance = currentScript.getRemainingUsage()",
+        "Prior tech-research (cmnqr8lkk): governance budget analysis; 200-unit safety threshold proposed",
+        "NetSuite docs: RESTlet has 5000 governance units; record.load is 5-10 units per type"
+      ]
+    },
+    {
+      "answer": "Two new endpoints: POST /dry-run and POST /execute. Both follow the existing POST /run pattern in server/app.js (lines 35-86): validate input, requireActiveProfile(), call nsapi.REST.post() with the appropriate action, return structured response. The nsapi.REST.post() in auth.js handles token caching and 401 retry — fully reusable.",
+      "evidence": [
+        "server/app.js lines 35-86: POST /run endpoint pattern",
+        "server/auth.js REST.post(): handles OAuth token, retry on 401, posts to restletUrl",
+        "Prior tech-research (cmnqr8lkk): same endpoint pattern recommended"
+      ]
+    },
+    {
+      "answer": "The helix-global-server's copy at netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js must be updated in lockstep with the ns-gm root copy. Both copies are currently identical (confirmed by direct inspection). The SDF deployment pipeline deploys the server copy to customer accounts. Deployment sequence: update RESTlet first, then enable dry-run calls in server orchestrator.",
+      "evidence": [
+        "Direct read of both RESTlet copies: identical content confirmed",
+        "helix-global-server diagnosis: duplicate RESTlet identified as sync requirement",
+        "repo-guidance.json: both ns-gm and helix-global-server are target repos"
+      ]
+    }
+  ],
+  "statement": "The technical direction for proxy modules is Approach B: Two-Phase RESTlet with Module Proxy. The existing new Function(...moduleNames, userCode) pattern at line 166 of ns_gm_restlet.js enables transparent module substitution by swapping the N/record entry in moduleParamValues[] (lines 115-125) with a proxy wrapper for dry-run. Read operations pass through to real NetSuite data; write operations (save, submitFields, delete) are intercepted to capture before/after field state without committing. New dry-run and execute-approved RESTlet actions are additive else-if branches with zero impact on existing run/logs paths. Approval token validation is server-side only. Express proxy gains POST /dry-run and POST /execute endpoints following the existing /run pattern. The helix-global-server's duplicate RESTlet must be updated in lockstep. No new dependencies needed.",
+  "followups": []
+}

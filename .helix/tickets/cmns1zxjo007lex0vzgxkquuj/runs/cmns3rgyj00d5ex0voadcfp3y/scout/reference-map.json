@@ -1,0 +1,58 @@
+{
+  "problem": "Research ticket asking whether proxy modules can go deeper than replacing N/record with a custom wrapper. The user's refined question (continuation context): can we keep the REAL NetSuite module running — not our own version — and intercept at the boundary where it actually sends data to NetSuite? The goal is to see what NetSuite actually gets after N/record runs its own internal processing, not just the user's raw input or a proxy-captured field snapshot.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "The deployed NetSuite RESTlet. Lines 7-16: AMD define() loads 24 N/* modules as real objects from the NetSuite runtime. Lines 71-96: moduleMap stores references to these real module objects. Lines 115-125: moduleParamNames/moduleParamValues arrays built — the known proxy substitution point. Line 166: new Function(...moduleNames, userCode) creates isolated execution scope. Line 169: executionFunction(...moduleValues) passes module objects. The user's question asks whether interception can happen INSIDE or AFTER these real module objects' methods rather than by replacing the objects themselves."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Express proxy. POST /run (lines 35-86) forwards { code, modules } to RESTlet. POST /logs (lines 88-128) retrieves logs. Any new interception actions would follow this endpoint pattern. The Express layer is pure JSON pass-through — it cannot intercept N/* module internals."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M auth with JWT PS256. postToRestlet() (lines 172-182) is the HTTP boundary between the proxy server and NetSuite. This is the only external HTTP call in the chain. The RESTlet's N/* modules make internal JVM calls, not HTTP calls that could be intercepted at this layer."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "CLI run command. Posts code to /run endpoint. Backward-compatibility boundary."
+    },
+    {
+      "path": "package.json",
+      "why": "v1.0.5, Node >=24. Dependencies: axios, commander, express, jose. No test framework, no lint/typecheck scripts."
+    },
+    {
+      "path": "CLAUDE.md",
+      "why": "Architecture guide: CLI -> Express proxy (server/app.js) -> NetSuite RESTlet (ns_gm_restlet.js). Confirms the three-tier architecture and all active files."
+    },
+    {
+      "path": "src/cli.js",
+      "why": "CLI entry point via Commander. All command registrations."
+    }
+  ],
+  "facts": [
+    "SuiteScript 2.1 (@NApiVersion 2.1, line 2) runs inside NetSuite's server-side JavaScript engine. N/* module methods make internal JVM calls to NetSuite's Java backend, NOT external HTTP calls. There is no HTTP transport layer to intercept between the module and the database.",
+    "The RESTlet's new Function(...moduleNames, userCode) at line 166 creates an isolated execution scope. User code receives modules as positional parameters only — no global require(), define(), or module registry access from inside the function.",
+    "The moduleMap (lines 71-96) stores references to the 24 real N/* module objects provided by NetSuite's AMD define(). These are the genuine module objects instantiated by the NetSuite runtime.",
+    "The moduleParamValues array (lines 115-125) is built by iterating requestedModules and pushing real module objects. The prior research established this as the substitution point for swapping a proxy wrapper. The user's refined question asks if we can avoid this replacement approach.",
+    "When record.save() is called on a real N/record Record instance, the following processing happens inside NetSuite's opaque runtime: field validation, mandatory field checks, default value population, formula recalculations, sourcing (dependent field auto-population), and then database commit. This processing is not visible to SuiteScript.",
+    "NetSuite's beforeSubmit UserEventScript (UES) is the only NetSuite-native interception point that fires AFTER the record is assembled for save but BEFORE it's committed. It receives the 'new record' context with post-validation field state. Prior research rejected this (Approach A) due to governance chaining risk: RESTlet -> record.save() -> UES -> N/https.post() compounds governance across script contexts.",
+    "SuiteScript 2.1 uses @NApiVersion 2.1 which corresponds to ES2020-level JavaScript. ES6 Proxy objects MIGHT be available but this is unverified in the SuiteScript runtime — NetSuite documentation does not explicitly confirm Proxy support. This is a key unknown for the user's preferred approach.",
+    "Method wrapping (monkey-patching) is a middle ground: keep the real module object but replace specific methods like record.save with a wrapper that captures state, then calls the original save. This keeps the real module but adds observation. Whether N/record module methods are writable (not frozen/sealed) is unverified in the SuiteScript runtime.",
+    "The current proxy approach (Approach B from prior research) swaps the module object in moduleParamValues. The proxy's read operations delegate to the real module, but write operations (save, submitFields, delete) are intercepted BEFORE the real module's write code runs. This means the captured state reflects the record's in-memory field values at the time of the write call, but NOT any processing that record.save()'s internal logic would apply (validation transforms, default population, formula recalculations).",
+    "There are three interception depth levels: (1) User input capture — just log what the user's code calls; (2) Proxy wrapper — intercepts at the module API boundary, before the real module's write methods execute; (3) Transport/commit interception — captures data after the module's internal processing but before database commit. Level 1 is what the ticket originally asked about avoiding. Level 2 is what prior research proposed. Level 3 is what the user's continuation context asks about.",
+    "For Level 3 (transport interception), the only SuiteScript-native mechanism is the beforeSubmit UES. Another theoretical approach is calling the real record.save() and then immediately reading back the record to see what was committed — but this has real side effects (the save actually happens).",
+    "ns-gm has no test framework, no lint scripts, no typecheck scripts. Quality gates are limited to manual testing. Package scripts: start, dev, link only.",
+    "The helix-global-server maintains a duplicate RESTlet at netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js deployed via SDF. Both copies are currently identical."
+  ],
+  "unknowns": [
+    "Whether SuiteScript 2.1's JavaScript engine (Nashorn or GraalJS) supports ES6 Proxy objects. If supported, Proxy could transparently wrap the real module objects while preserving their full behavior, only adding observation hooks. NetSuite documentation does not explicitly confirm Proxy availability.",
+    "Whether N/* module objects and their methods are frozen (Object.isFrozen), sealed (Object.isSealed), or have non-writable property descriptors. If methods are writable, monkey-patching (replacing individual methods with wrappers that call the originals) is possible. If frozen/sealed, method-level wrapping would fail.",
+    "Whether Record instance methods (getValue, setValue, save, etc.) are on the prototype or are own properties. This affects whether method wrapping can be applied to individual record instances vs. the Record class prototype.",
+    "What specific processing happens inside N/record.save() between the SuiteScript call and the database commit — specifically: field validation transforms, mandatory field enforcement, default value population, sourcing (dependent field auto-population), formula recalculations. The proxy approach captures pre-save state; the user wants post-processing state.",
+    "Whether letting record.save() execute for real (to capture post-processing state) and then immediately reverting (via record.delete or transaction rollback) is feasible. N/transaction module has no explicit rollback API for RESTlet contexts.",
+    "Whether the beforeSubmit UES approach (Approach A, previously rejected) could be revisited as a companion to Approach B specifically for the purpose of capturing post-validation state, rather than as the primary interception mechanism.",
+    "Whether SuiteScript's record.save() returns any metadata about what processing was applied (validation warnings, default values set, sourcing applied) that could be captured even in the proxy approach.",
+    "Governance cost of 'save then read-back' if that approach were used to capture post-processing state — a save + load costs approximately 15-25 governance units total, within the 5000-unit budget, but has real side effects."
+  ]
+}
