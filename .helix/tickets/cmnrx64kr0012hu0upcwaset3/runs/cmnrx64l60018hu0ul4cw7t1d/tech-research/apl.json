@@ -1,0 +1,56 @@
+{
+  "questions": [
+    "Can the RESTlet's module injection pattern reliably support proxy N/record substitution for dry-run?",
+    "What is the exact proxy wrapper implementation strategy for intercepting N/record write methods?",
+    "How should the changeSummary JSON be structured for the dry-run response?",
+    "What new Express proxy endpoints are needed and how do they differ from /run?",
+    "How should the execute-approved action differ from the existing run action?"
+  ],
+  "answers": [
+    {
+      "answer": "YES, confirmed viable. The RESTlet uses `new Function(...moduleNames, userCode)` at line 166 with module objects passed as positional arguments at line 169. The `moduleParamNames[]`/`moduleParamValues[]` arrays (lines 115-125) are built dynamically from `requestedModules` via `loadModule()`. For dry-run, after building these arrays, the code finds the 'record' entry and replaces `moduleParamValues[recordIndex]` with a proxy wrapper object before passing to `safeExecute()`. SuiteScript 2.1 (@NApiVersion 2.1 at line 2) supports ES2020+ features (object spread, closures, arrow functions) needed for clean proxy implementation. The 23 other modules in the module map (lines 71-96) pass through unmodified.",
+      "evidence": [
+        "ns_gm_restlet.js line 166: `const executionFunction = new Function(...moduleNames, userCode);`",
+        "ns_gm_restlet.js line 169: `const finalResult = executionFunction(...moduleValues);`",
+        "ns_gm_restlet.js lines 115-125: dynamic moduleParamNames/moduleParamValues array construction",
+        "ns_gm_restlet.js line 2: @NApiVersion 2.1 confirms modern JavaScript support",
+        "ns_gm_restlet.js lines 71-96: moduleMap with 23 modules; only 'record' needs proxying"
+      ]
+    },
+    {
+      "answer": "The proxy wrapper is a plain JavaScript object with the same API surface as N/record. It holds a reference to the real N/record module and an internal `capturedOperations` array. Read methods delegate to the real module: `load(options)` calls real `record.load()`, then captures current field values via `getFields()` as 'before' state and returns a wrapped record object that intercepts `.save()`. `create(options)` returns a wrapped record that captures `.setValue()` calls and returns a placeholder ID on `.save()`. Write methods capture state without committing: `submitFields(options)` loads the target record to get 'before' state, captures submitted values as 'after' state, does NOT call real `submitFields()`. `delete(options)` loads the record to capture full state as 'before', marks as deletion. Body field discovery uses `getFields()` (returns field IDs). Sublist field capture requires agent-provided `targetSublistIds` in the request payload.",
+      "evidence": [
+        "ns_gm_restlet.js lines 71-96: moduleMap['record'] = record (the real N/record module reference)",
+        "SuiteScript N/record API: load(), create(), submitFields(), delete(), getFields() are the standard methods",
+        "Prior diagnosis (ns-gm): proxy confirmed viable; write methods intercepted, reads pass through",
+        "Prior product.md: sublist capture relies on agent-provided targetSublistIds (known limitation)"
+      ]
+    },
+    {
+      "answer": "The changeSummary is a JSON object with `operations[]` array and `warnings[]` array. Each operation has: `type` (update/create/delete/submitFields), `recordType` (string), `recordId` (string or placeholder), `fields[]` array of {id, label?, before, after} objects, and optional `sublists[]` array of {id, lines[]} for sublist changes. The `warnings` array includes known limitations (e.g., 'Sublist changes may be incomplete without targetSublistIds hints'). Field labels come from `getFields()` result when available; otherwise only the field ID is provided. Governance usage is tracked separately in the response alongside the changeSummary.",
+      "evidence": [
+        "Prior product.md: structured change summary with record type, record ID, field-level before/after values",
+        "Prior diagnosis (ns-gm): getFields() returns body field IDs; sublists require targetSublistIds hints",
+        "ns_gm_restlet.js lines 127-137: governance tracking pattern (initialGovernance, finalGovernance, used)"
+      ]
+    },
+    {
+      "answer": "Two new Express endpoints following the existing `/run` pattern at server/app.js lines 35-86: (1) `POST /dry-run` accepts `{code, modules, targetSublistIds?}`, calls `requireActiveProfile()`, sends action='dry-run' to RESTlet via `nsapi.REST.post()`, returns the changeSummary. (2) `POST /execute` accepts `{code, modules, approvalToken}`, calls `requireActiveProfile()`, sends action='execute-approved' to RESTlet via `nsapi.REST.post()`, returns execution result identical to `/run`. Both endpoints reuse the existing auth flow (`nsapi.REST.post()` handles OAuth, retry on 401). The key difference from `/run` is the `action` field sent in the RESTlet payload and the additional request/response fields.",
+      "evidence": [
+        "server/app.js lines 35-86: POST /run endpoint pattern (requireActiveProfile, nsapi.REST.post, structured response)",
+        "server/auth.js: nsapi.REST.post() handles OAuth 2.0 M2M JWT, token caching, 401 retry",
+        "ns_gm_restlet.js lines 23-37: action dispatcher uses if/else chain; new actions are additive branches"
+      ]
+    },
+    {
+      "answer": "The execute-approved action is functionally identical to the existing 'run' action: it passes user code through to `safeExecute()` with the real (unproxied) N/record module. The only differences are: (1) the action name is 'execute-approved' instead of 'run' for audit clarity, (2) the request body includes an `approvalToken` field that the RESTlet passes through in the response (server-side validation of the token happens in helix-global-server, not in the RESTlet). The RESTlet itself does NOT validate the approval token — it trusts the calling server. This keeps the RESTlet simple and avoids storing secrets in NetSuite.",
+      "evidence": [
+        "ns_gm_restlet.js handleRunAction() lines 45-153: the full run flow that execute-approved replicates",
+        "Prior product.md: HMAC approval token validated by Helix server, not RESTlet",
+        "Prior diagnosis (server): HMAC token generation and validation is server-side"
+      ]
+    }
+  ],
+  "statement": "The ns-gm RESTlet's parameter-based module injection (new Function at line 166) enables reliable proxy N/record substitution for dry-run. Two new additive RESTlet actions (dry-run, execute-approved) and two new Express proxy endpoints (POST /dry-run, POST /execute) are needed. The proxy module captures before/after field state via getFields() for body fields and agent-provided targetSublistIds for sublists. All changes are additive — existing run/logs actions and CLI commands are untouched, ensuring zero regression for non-Helix users.",
+  "followups": []
+}
