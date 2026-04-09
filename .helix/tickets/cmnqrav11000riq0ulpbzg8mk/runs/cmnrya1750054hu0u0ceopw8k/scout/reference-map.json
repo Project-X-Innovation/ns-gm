@@ -1,0 +1,67 @@
+{
+  "problem": "ns-gm is the runtime execution tool that can execute arbitrary SuiteScript in NetSuite. The ticket envisions using ns-gm for creating records in sandbox (via record.create, search.create, etc.) and for verifying deployed customizations. Currently ns-gm has no SDF awareness and no concept of object creation workflows — it only executes ad-hoc code and retrieves logs.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "The deployed RESTlet that executes SuiteScript code. Lines 63-96: module map with 24+ N/* modules including record, search, query, file, task. Lines 114-125: dynamic module injection. This is the execution boundary — any SuiteScript that can be written can be executed here."
+    },
+    {
+      "path": "src/cli.js",
+      "why": "CLI entry point with Commander.js. Registers 8 commands: init, run, env, logs, stop, setup, setup:ci, help. No SDF or deployment-related commands exist."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "Execute SuiteScript command — sends code to proxy which forwards to RESTlet. This is how record.create, search.create, etc. would be invoked for sandbox object creation."
+    },
+    {
+      "path": "src/commands/logs.js",
+      "why": "Log retrieval via SuiteQL query on scriptnote table. Supports script-id filtering — useful for verifying deployed scripts are executing."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Express proxy with /run and /logs endpoints. Currently a pass-through to RESTlet. No batch/workflow execution support."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M authentication with JWT (PS256). Token caching with 55-min TTL. Auto-refresh on 401. This is the auth layer for all ns-gm operations."
+    },
+    {
+      "path": "src/utils/profileStore.js",
+      "why": "Credential storage at ~/.ns-gm/credentials.json. Alias-based profiles for multiple accounts/environments."
+    },
+    {
+      "path": "src/commands/setup-ci.js",
+      "why": "Non-interactive CI setup used by helix-global-server orchestrator (runNsGmSetupAndValidateEnv). Sets up credentials without user interaction."
+    },
+    {
+      "path": "config.json",
+      "why": "Default config: proxy port 9292, inactivity timeout 900000ms, default log count 20."
+    },
+    {
+      "path": "package.json",
+      "why": "Version 1.0.5, Node.js >=24.0.0, bin: ns-gm. No test framework, no build step (plain JS). Dependencies: commander, express, jose, axios."
+    },
+    {
+      "path": "CLAUDE.md",
+      "why": "AI agent guidance. Documents architecture, credential model, command surface, active files."
+    }
+  ],
+  "facts": [
+    "ns-gm RESTlet provides access to 24+ N/* modules: log, search, record, runtime, format, query, transaction, file, https, http, email, error, url, encode, crypto, currency, render, xml, config, task, redirect, cache, certificateControl, workflow",
+    "Arbitrary SuiteScript can be executed via ns-gm run --code or --file, including record.create(), search.create(), query.runSuiteQL(), file.create(), etc.",
+    "The RESTlet uses new Function() for code execution within a module scope",
+    "ns-gm has no SDF/SuiteCloud CLI integration — it operates purely through RESTlet-based SuiteScript execution",
+    "The helix-global-server orchestrator sets up ns-gm via setup:ci with alias 'helix-runtime' and validates environment with ns-gm env",
+    "No test files or test framework exist in the repo",
+    "The proxy server runs detached on localhost:9292 with 15-minute inactivity timeout",
+    "OAuth tokens are cached with 60-second refresh buffer before expiry",
+    "ns-gm is installed globally in sandbox runtime via npm install -g (orchestrator sandbox-runtime.ts)"
+  ],
+  "unknowns": [
+    "Whether ns-gm run can handle long-running operations (governance limits) when creating multiple records in sequence",
+    "Whether the 30-second RESTlet timeout is sufficient for complex multi-record creation operations",
+    "Whether new ns-gm commands are needed (e.g., ns-gm create-record, ns-gm create-script) or if the existing run command is sufficient",
+    "Whether ns-gm should gain awareness of SDF object types for verification purposes",
+    "How to handle rollback if a multi-record creation partially succeeds via ns-gm"
+  ]
+}
