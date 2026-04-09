@@ -1,93 +1,161 @@
-# Tech Research: Proxy Module Research — ns-gm
+# Tech Research: Proxy Module Research — ES6 Proxy Wrapping of Real NetSuite Modules (ns-gm)
 
 ## Technology Foundation
 
-- **Runtime**: SuiteScript 2.1 (`@NApiVersion 2.1`) RESTlet with `@NModuleScope Public`
-- **Execution model**: `new Function(...moduleNames, userCode)` at line 166 of `ns_gm_restlet.js` creates an execution function; line 169 calls it with `...moduleValues` (real N/* module objects as positional parameters)
-- **Module injection**: Lines 115-125 build `moduleParamNames[]` and `moduleParamValues[]` arrays dynamically from `requestedModules` via `loadModule()`. The `moduleMap` (lines 71-96) contains 24 pre-loaded N/* modules.
-- **Current actions**: `run` (execute code) and `getscriptexecutionlogs` (retrieve logs) — the only two branches in the `post()` dispatcher (lines 23-37)
-- **Express proxy**: `server/app.js` with POST `/run` and POST `/logs` endpoints; forwards to RESTlet via `nsapi.REST.post()` (OAuth 2.0 M2M with JWT PS256 via `server/auth.js`)
+- **Runtime**: SuiteScript 2.1 (`@NApiVersion 2.1`) on **GraalJS** (ES2019+/ES2023). ES6 Proxy is part of ES2015 and is fully supported by GraalJS.
+- **Execution model**: `new Function(...moduleNames, userCode)` at line 166 of `ns_gm_restlet.js` creates an execution function; line 169 calls it with `...moduleValues` (real N/* module objects as positional parameters). User code cannot distinguish a Proxy-wrapped module from the real one.
+- **Module injection**: Lines 115-125 build `moduleParamNames[]` and `moduleParamValues[]` arrays dynamically from `requestedModules` via `loadModule()`. The `moduleMap` (lines 71-96) contains 24 pre-loaded N/* modules loaded by NetSuite's AMD `define()` (lines 7-16).
+- **Current actions**: `run` (execute code) and `getscriptexecutionlogs` (retrieve logs) — the only two branches in the `post()` dispatcher (lines 23-37).
+- **Express proxy**: `server/app.js` with POST `/run` and POST `/logs` endpoints; forwards to RESTlet via `nsapi.REST.post()` (OAuth 2.0 M2M with JWT PS256 via `server/auth.js`).
 - **No build step**, no test framework, no lint/typecheck. Pure JS + Express + Commander CLI.
-- **Governance budget**: 5,000 units per RESTlet invocation
+- **Governance budget**: 5,000 units per RESTlet invocation.
+- **Credential infrastructure**: 10 NsGmCredential records across 5 organizations confirmed operational (runtime-verified via database inspection).
 
 ## Architecture Decision
 
+### Evolution from Prior Research
+
+Prior research (tickets cmnqr8lkk, cmnrx64kr) established "Approach B: Module Replacement" — swapping the N/record module object in `moduleParamValues[]` with a custom proxy wrapper. This captures what the user's code calls (Level 1) but misses what the real module processes internally — field sourcing, dependent field population, and in-memory validation are lost because the real module never runs.
+
+The user's refined ask: **"Can we keep the NetSuite module, not our own version of the module, all the code that actually runs in the NetSuite module, but just hijack it at the end when it sends it off to NetSuite?"**
+
+This drives a shift from module replacement to **ES6 Proxy wrapping** — a strict improvement.
+
 ### Options Considered
 
-**Option A: Separate UserEventScript (beforeSubmit hooks)**
+**Option A: Companion beforeSubmit UserEventScript (UES)**
 
-Deploy a new `beforeSubmit` UES alongside the RESTlet. The UES fires on every Helix-initiated record save and makes an `N/https.post` call to Helix to check approval status.
+Deploy a `beforeSubmit` UES that fires on every Helix-initiated record save. The UES captures the post-validation 'new record' state at the commit boundary.
 
-- *Pros*: Captures exact final record state at the point of commit; leverages NetSuite's built-in save lifecycle.
-- *Cons*: **Governance chaining risk** is the critical blocker — RESTlet code calls `record.save()`, which triggers the UES, which calls `N/https.post()`. Governance units compound across script contexts. Oracle best practice: "keep beforeSubmit lean." External HTTP latency in beforeSubmit may cause timeouts. Requires deploying a new script type to customer accounts (new operational pattern). Needs a new NS-to-Helix auth channel.
-- *Verdict*: **Rejected.** Governance chaining risk and operational complexity make this unsuitable for MVP.
+- *Pros*: Captures true Level 3 state (post-validation, post-sourcing, post-formula-recalc). NetSuite-native mechanism.
+- *Cons*: **Governance chaining risk** — RESTlet → `record.save()` → UES → `N/https.post()`. Governance compounds across script contexts. External HTTP latency in beforeSubmit may cause timeouts. Requires deploying a new script type to customer accounts. Needs a new NS-to-Helix auth channel.
+- *Verdict*: **Rejected.** Governance chaining risk and operational complexity make this unsuitable.
 
-**Option B: Two-Phase RESTlet with Module Proxy (CHOSEN)**
+**Option B: Module Replacement Proxy (Prior Research)**
 
-Add new `dry-run` and `execute-approved` actions to the existing RESTlet. The `dry-run` action swaps the real `N/record` module with a proxy wrapper in the `moduleParamValues` array before passing to `safeExecute()`. Write operations are intercepted; reads pass through to real NetSuite data.
+Replace the `N/record` module object in `moduleParamValues[]` with a custom wrapper that mimics the N/record API. Write operations intercepted; reads delegate to the real module.
 
-- *Pros*: No new NetSuite script deployment. No governance chaining — stays within the RESTlet's single 5000-unit context. Architecturally natural: `new Function()` already receives modules as positional arguments. Reuses the full existing pipeline. New actions are additive else-if branches — zero risk to existing `run`/`logs` paths.
-- *Cons*: Cannot capture NetSuite-side effects (workflows, UserEventScripts, formula recalculations triggered by real saves). Proxy must handle the N/record API surface that agent scripts use.
+- *Pros*: Proven pattern from prior research. No new NetSuite deployment. Works within single RESTlet governance context.
+- *Cons*: **The real module never runs for write operations.** User code executes against a custom object, not the real N/record module. In-memory processing (field sourcing, dependent field population) is NOT captured — only what the user's code explicitly sets (Level 1). High maintenance burden: must implement every N/record method. Risk of missing API methods or behavioral differences.
+- *Verdict*: **Superseded** by Option B-prime (ES6 Proxy wrapping).
 
-**Option C: Companion Suitelet with NetSuite-native UI**
+**Option B-prime: ES6 Proxy Wrapping of Real Module (CHOSEN)**
 
-Deploy a Suitelet that provides an approval UI within NetSuite.
+Wrap the real `N/record` module object in `new Proxy(realModule, handler)` at the `moduleParamValues` substitution point. ALL operations pass through to the real module. The Proxy handler's `get` trap adds observation hooks ONLY at write-boundary methods (`save`, `submitFields`, `delete`).
 
-- *Pros*: Native NetSuite UI.
-- *Cons*: Fractures UX — approval should happen in Helix, not NetSuite. Out of scope per product spec.
-- *Verdict*: **Rejected.**
+- *Pros*: **Real module behavior preserved** — all reads, creates, loads, and field manipulations use the actual N/record module. In-memory processing (sourcing, dependent field population, in-memory validation) runs naturally because it's the real module. **Automatic API coverage** — Proxy passes through all unintercepted methods, no need to reimplement the API surface. **Captures Level 2** — the field dump before `save()` reflects the real module's in-memory state, not just user input. Low maintenance: only write-boundary handlers need code.
+- *Cons*: **Key unknown**: Whether ES6 Proxy works correctly on GraalJS Java-backed N/* module objects (host object interop edge case). Requires empirical runtime verification. Cannot capture Level 3 (post-commit state) without letting save execute.
+- *Verdict*: **Chosen.** Strict improvement over Option B — same observability goals, higher fidelity, less custom code.
 
-### Chosen Option: Two-Phase RESTlet with Module Proxy (Option B)
+**Option C: Monkey-Patching Individual Methods**
+
+Keep the real module but replace individual methods (e.g., `record.save = wrapperFn`) with wrappers that call the originals.
+
+- *Pros*: Simpler than full Proxy; works if Proxy is unavailable.
+- *Cons*: Requires N/* module methods to be writable (not frozen/sealed). Modifies the shared module object, which could affect other script executions in the same RESTlet deployment. Does not handle dynamically accessed methods.
+- *Verdict*: **Deferred as fallback.** If ES6 Proxy fails on Java-backed objects, monkey-patching is the fallback. Proxy wrapping does not modify the original object, making it safer.
+
+### Chosen Option: ES6 Proxy Wrapping (Option B-prime)
 
 **Rationale:**
-1. The `new Function(...moduleNames, userCode)` pattern at line 166 already passes modules as function arguments. Swapping a proxy `record` module into `moduleParamValues[i]` for the `dry-run` action requires no fundamental change to the execution model.
-2. All operations stay within one RESTlet invocation — no governance chaining.
-3. No new script deployment to customer accounts. No new auth channels.
-4. Two prior research tickets (cmnqr8lkk, cmnrx64kr) have independently validated this approach as the recommended path with LOW regression risk.
-5. Backward compatibility is automatic: new actions are additive `else if` branches in the `post()` dispatcher.
+1. The user explicitly asked to keep the real module. ES6 Proxy wraps it without modification.
+2. SuiteScript 2.1 runs on GraalJS (ES2019+/ES2023). ES6 Proxy (ES2015) is supported. Real-world confirmation: developer Marty Y. Chang's article demonstrates Proxy-wrapped record objects in SuiteScript 2.1 User Event Scripts.
+3. The `new Function()` execution scope (line 166) is isolated — user code receives the Proxy-wrapped module as a positional parameter and cannot detect the wrapping.
+4. The field dump captured before `save()` reflects the REAL module's in-memory processing (Level 2: sourcing, dependent field population, in-memory validation), not just user-set values (Level 1). This is substantially richer.
+5. Only write-boundary handler traps are needed — all other methods are automatic passthrough. Far less code to write and maintain than module replacement.
 
 ## Core API/Methods
 
+### Two-Level Proxy Pattern
+
+The architecture uses a two-level Proxy chain:
+
+**Level 1 — Module Proxy**: Wraps the real `N/record` module object. The `get` trap intercepts calls to `create`, `load`, `copy`, `submitFields`, `delete`. Methods that return Record instances (`create`, `load`, `copy`) wrap the returned instance in a Level 2 Proxy. Methods that write directly (`submitFields`, `delete`) are intercepted for state capture.
+
+**Level 2 — Record Instance Proxy**: Wraps each real Record instance returned by `record.create()`, `record.load()`, `record.copy()`. The `get` trap intercepts `save()` to capture the full in-memory field state before the actual save. ALL other Record methods (`getValue`, `setText`, `getSublistValue`, `insertLine`, etc.) pass through to the real Record instance.
+
+### Injection Point
+
+In `handleRunAction()` (or new `handleDryRunAction()`), after building `moduleParamValues` at lines 115-125:
+
+```
+// Conceptual — not implementation code:
+// For each module in moduleParamValues, if it's 'record', wrap it:
+// moduleParamValues[i] = new Proxy(moduleObj, moduleHandler)
+```
+
+The real `record` object from NetSuite's AMD `define()` is preserved as the Proxy target. User code calls methods on the Proxy, which delegates to the real module.
+
 ### RESTlet Action Extensions
 
-**`dry-run` action** — new `else if` branch in `post()` at line 23:
-- Input: `{ action: "dry-run", data: { code, modules, context } }` where `context` contains `{ targetRecordTypes, targetSublistIds, description }`
-- Flow: Build `moduleParamNames`/`moduleParamValues` as normal, then **replace** the `record` entry in `moduleParamValues` with a proxy wrapper object before calling `safeExecute()`
-- Output: `{ success, recordChanges[], governance, executionTime }` where `recordChanges` is the array of captured before/after operations
+**`dry-run` action** — new `else if` branch in `post()`:
+- Input: `{ action: "dry-run", data: { code, modules, context } }` where `context` contains `{ targetSublistIds, description }`
+- Flow: Build `moduleParamNames`/`moduleParamValues` as normal, then **wrap** the `record` entry in `moduleParamValues` with `new Proxy(recordModule, handler)` before calling `safeExecute()`
+- The handler accumulates intercepted operations into a `capturedChanges` array accessible after execution
+- Output: `{ success, recordChanges[], governance, executionTime }` where `recordChanges` is the array of captured operations with field state
 
 **`execute-approved` action** — new `else if` branch in `post()`:
 - Input: `{ action: "execute-approved", data: { code, modules, approvalToken, approvalId } }`
 - Flow: Functionally identical to existing `run` action — executes code with real (non-proxied) modules. Echoes `approvalToken` in response for server-side verification.
 - Output: Standard `run` response format + `{ approvalToken }` echo
 
-### Module Proxy Design (within RESTlet)
+### Proxy Handler Design
 
-The proxy wraps the real `N/record` module for `dry-run` only. Core principle: **read-through, write-intercept**.
+**Module-Level Handler (wraps N/record):**
 
-| N/record Method | Proxy Behavior |
-|----------------|----------------|
-| `record.load(options)` | **Pass-through** to real module. Captures loaded record's body field values via `getFields()` as "before" state. Returns real Record object (wrapped to intercept `.save()`). |
-| `record.create(options)` | **Pass-through** to real module (creates in-memory record). Returns wrapped Record to intercept `.save()`. |
-| `record.copy(options)` | **Pass-through** to real module. Captures source record state. Returns wrapped Record. |
-| `record.delete(options)` | **Intercepted**: Loads target record for "before" state capture, marks as deletion, returns without deleting. |
-| `record.submitFields(options)` | **Intercepted**: Loads target record for "before" state, captures submitted values as "after", does not commit. Returns record ID. |
-| `Record.prototype.save()` | **Intercepted**: Captures all modified field values as "after" state. Returns existing ID (for loaded records) or placeholder negative ID (for created records). Does not commit. |
-| `record.transform(options)` | **Pass-through** to real module. Captures source state. Nested operations in transform callbacks are NOT intercepted (known limitation). |
+| Trapped Method | Behavior |
+|---------------|----------|
+| `record.create(options)` | Call `realRecord.create(options)`. Wrap returned Record instance in Level 2 Proxy. Return the wrapper. |
+| `record.load(options)` | Call `realRecord.load(options)`. Capture "before" field state via `getFields()`/`getValue()`/`getText()`. Wrap returned Record in Level 2 Proxy. Return the wrapper. |
+| `record.copy(options)` | Call `realRecord.copy(options)`. Wrap returned Record in Level 2 Proxy. Return the wrapper. |
+| `record.submitFields(options)` | **Intercept**: Load the target record for "before" state, capture the submitted field values as "after" delta. Do NOT call `realRecord.submitFields()`. Return the record ID. |
+| `record.delete(options)` | **Intercept**: Load target record for state capture, record as deletion. Do NOT call `realRecord.delete()`. Return the record ID. |
+| `record.transform(options)` | Call `realRecord.transform(options)`. Wrap returned Record in Level 2 Proxy. Transform callbacks execute against the real module. |
+| All other properties | **Passthrough** via default `get` trap: `return Reflect.get(target, prop, receiver)` |
 
-**All other methods** pass through unmodified: `getValue`, `getText`, `getSublistValue`, `getLineCount`, `getField`, `getFields`, `setValue`, `setText`, `setSublistValue`, `insertLine`, `removeLine`, etc. Read operations on Record instances and all 23 other N/* modules are untouched.
+**Record-Instance Handler (wraps each Record):**
+
+| Trapped Method | Behavior |
+|---------------|----------|
+| `instance.save()` / `instance.save(options)` | **Intercept**: Capture comprehensive field dump from the live Record instance (body fields via `getFields()`/`getValue()`/`getText()`, sublist data via `getLineCount()`/`getSublistValue()`). The dumped state reflects the real module's in-memory processing (sourcing, dependent fields). Do NOT call `realInstance.save()`. Return existing ID (loaded records) or placeholder negative ID (created records). Push captured state to `capturedChanges`. |
+| All other properties | **Passthrough** via `Reflect.get(target, prop, receiver)` — `getValue`, `setValue`, `getText`, `getSublistValue`, `insertLine`, etc. all execute on the real Record instance. |
+
+### What This Captures: Three Interception Levels
+
+| Level | Description | ES6 Proxy Approach |
+|-------|-------------|-------------------|
+| **Level 1** — User Input | Only what user code called (`setValue`, etc.) | Implicitly captured — it's the real module |
+| **Level 2** — Pre-save In-Memory State | All field values after real module's in-memory processing (sourcing, dependent fields, in-memory validation) | **CAPTURED** — `getFields()`/`getValue()`/`getText()` on the real Record instance before `save()` |
+| **Level 3** — Post-commit State | Field values after `record.save()`'s JVM-internal processing (mandatory checks, formula recalcs, server-side defaults) | Only with real save (side effects) or companion beforeSubmit UES |
+
+**Key insight**: Level 2 is substantially richer than Level 1. When user code calls `record.setValue({fieldId: 'entity', value: 123})` on a Sales Order, the real N/record module immediately populates dependent sourced fields (billing address, terms, tax code, etc.) in memory. The Proxy approach captures ALL of this by reading the record's field values before save — without executing the save.
 
 ### Field State Capture Strategy
 
-1. **Body fields**: Use `record.getFields()` on loaded/created records. Returns all body-level field IDs. For each field: `{ fieldId, value: record.getValue({fieldId}), text: record.getText({fieldId}) }`.
+1. **Body fields**: `record.getFields()` on the live Record instance returns all body-level field IDs. For each: `{ fieldId, value: record.getValue({fieldId}), text: record.getText({fieldId}) }`.
 2. **Sublist fields**: No equivalent discovery API for sublists. Mitigation:
-   - Accept `targetSublistIds` in the `dry-run` context from the AI agent (it knows which sublists its code modifies)
-   - Attempt common sublist IDs for transaction records (`item`, `expense`, `line`, `partner`, `salesteam`) with silent failure for non-existent sublists
+   - Accept `targetSublistIds` in the `dry-run` context from the AI agent
+   - For each known sublist: `getLineCount({sublistId})` then iterate lines with `getSublistValue()`
+   - Attempt common sublist IDs for transaction records (`item`, `expense`, `line`, `partner`, `salesteam`) with silent failure
    - Future: record-type-to-sublist mapping table
 3. **Limitations**: `getFields()` returns body fields only. Sublist capture completeness depends on hints or known sublist IDs.
 
+### Change Summary Output Format
+
+```
+{
+  operation: "save" | "create" | "submitFields" | "delete",
+  recordType: string,
+  recordId: string | number | null,
+  before: { [fieldId]: { value, text } },
+  after: { [fieldId]: { value, text } },
+  sublists: { [sublistId]: { lineCount: number, lines: [...] } }
+}
+```
+
 ### Express Proxy Endpoints
 
-Two new endpoints in `server/app.js` following the existing `/run` pattern:
+Two new endpoints in `server/app.js` following the existing `/run` pattern (lines 35-86):
 
 ```
 POST /dry-run    → { action: "dry-run", data: { code, modules, context } }
@@ -98,52 +166,55 @@ Both use `requireActiveProfile()` + `nsapi.REST.post()` — identical authentica
 
 ## Technical Decisions
 
-### 1. Proxy lives inside the RESTlet, not the Express proxy
+### 1. ES6 Proxy wrapping over module replacement
 
-The module proxy **must** be implemented within `ns_gm_restlet.js` because:
-- The N/record module objects are instantiated by NetSuite's AMD `define()` at the top of the RESTlet (lines 7-16)
-- The proxy wrapper must wrap these real module objects to delegate read operations
-- The Express proxy (`server/app.js`) is a pure pass-through; it sends actions and receives results
+**Decision**: Use `new Proxy(realModule, handler)` instead of building a custom proxy object.
 
-**Rejected alternative**: Building a proxy at the Express layer. This is impossible — the Express proxy has no access to NetSuite's N/* module objects; it only sends JSON payloads to the RESTlet URL.
+**Why**: The user explicitly asked for the real module to keep running. Proxy wrapping is a strict improvement over module replacement:
 
-### 2. Only N/record needs proxying for MVP
+| Aspect | Module Replacement (Prior) | ES6 Proxy Wrapping (New) |
+|--------|---------------------------|--------------------------|
+| Module behavior | Simulated — custom object mimics API | **Real** — actual N/record runs |
+| Record instances | Custom replicas | **Real** NetSuite Record objects |
+| In-memory processing | Not captured | **Captured** — real sourcing/validation runs |
+| API surface coverage | Must implement every method | **Automatic** — Proxy passes through |
+| Maintenance burden | High — must track API changes | **Low** — only write handlers |
 
-Of the 24 pre-loaded modules, only `N/record` contains write methods that modify NetSuite data in ways relevant to the dry-run use case. All other modules either:
-- Are read-only (`N/search`, `N/query`, `N/runtime`, `N/config`)
-- Have side effects outside the record mutation scope (`N/email`, `N/task`, `N/file`)
-- Are utility modules (`N/format`, `N/encode`, `N/crypto`, `N/xml`, `N/url`)
+**Rejected alternative**: Module replacement (prior Approach B). Lower fidelity, higher maintenance.
 
-`N/transaction.void()` is the one exception — it's a write operation. **Deferred to Round 2** per prior research consensus.
+### 2. Proxy lives inside the RESTlet, not the Express proxy
 
-### 3. Approval token validation is server-side only
+The module proxy **must** be implemented within `ns_gm_restlet.js` because the N/record module objects are instantiated by NetSuite's AMD `define()` (lines 7-16). The Express proxy (`server/app.js`) has no access to these objects; it only sends JSON payloads.
 
-The RESTlet's `execute-approved` action is functionally identical to `run` — it executes code with real modules. The `approvalToken` is included in the request and echoed in the response. The Helix server (not the RESTlet) validates the token, ensuring the correct approved script ran.
+### 3. Only N/record needs Proxy wrapping for MVP
 
-**Rationale**: This avoids embedding shared secrets in the RESTlet (which would require SDF deployment coordination). The security boundary is the Helix server's `NsExecuteService`, which is the sole code path that can invoke `execute-approved`. The RESTlet runs in a trusted context (authenticated via OAuth 2.0 M2M).
+Of the 24 pre-loaded modules, only `N/record` contains write methods that modify NetSuite records. `N/transaction.void()` is the one exception — deferred to Round 2. Other write-capable modules (`N/email`, `N/file`, `N/https`, `N/task`) have side effects outside the record mutation scope.
 
-**Rejected alternative**: HMAC validation inside the RESTlet. Would require provisioning a shared secret to NetSuite via script parameters or headers — adds operational complexity for no security gain given the existing auth chain.
+### 4. `save()` is blocked in dry-run, not executed-then-rolled-back
 
-### 4. Governance safety threshold
+**Decision**: The Record-instance Proxy intercepts `save()` and captures field state WITHOUT calling the real `save()`.
 
-Dry-run consumes governance units from the same RESTlet invocation. The proxy should check `runtime.getCurrentScript().getRemainingUsage()` (already used at lines 47-48 of `handleRunAction`) and abort if remaining units drop below 200, returning a partial result with a governance warning.
+**Why**: NetSuite RESTlets have no transaction rollback API. Letting `save()` execute would commit data and fire workflows/UES with no undo. Blocking save and capturing Level 2 state is the safest approach that still provides substantially richer data than Level 1.
 
-### 5. Change summary output format
+**Rejected alternative**: Execute real `save()` then read back the record. Provides Level 3 fidelity but has irreversible side effects — data mutations, workflow triggers, UES firing.
 
-The `recordChanges` array in the dry-run response follows this structure:
+### 5. Approval token validation is server-side only
 
-```
-{
-  operation: "save" | "create" | "submitFields" | "delete",
-  recordType: string,
-  recordId: string | number | null,
-  before: { [fieldId]: { value, text } },
-  after: { [fieldId]: { value, text } },
-  sublists: { [sublistId]: { before: [...lines], after: [...lines] } }
-}
-```
+The RESTlet's `execute-approved` action echoes the `approvalToken`. The Helix server validates the token. This avoids embedding shared secrets in the RESTlet.
 
-This is sufficient for the server to produce a human-readable "before → after" change summary.
+### 6. Governance safety threshold
+
+Dry-run consumes governance from the same RESTlet invocation. The proxy should check `runtime.getCurrentScript().getRemainingUsage()` (already used at line 47) and abort if remaining units drop below 200, returning a partial result with a governance warning.
+
+### 7. `capturedChanges` accumulation pattern
+
+The Proxy handler closures share a `capturedChanges` array created in the `handleDryRunAction` scope. Each intercepted write method pushes to this array. After `safeExecute()` returns, `capturedChanges` is included in the response. This avoids global state — the array is scoped to the single request.
+
+### 8. Fallback strategy if Proxy fails on Java-backed objects
+
+**Primary**: ES6 Proxy wrapping (Option B-prime).
+**Fallback**: If empirical testing shows Proxy doesn't work on Java-backed N/* module objects, fall back to monkey-patching individual methods on a shallow clone of the module object. This is less elegant but avoids modifying the shared original.
+**Test first**: Before building the full handler, run a minimal Proxy test via ns-gm CLI to confirm viability.
 
 ## Cross-Platform Considerations
 
@@ -151,76 +222,93 @@ This is sufficient for the server to produce a human-readable "before → after"
 
 The modified RESTlet must be deployed to customer NetSuite accounts via SDF before the server starts sending `dry-run` actions. If the server calls `dry-run` against an old RESTlet, it gets `{ success: false, error: "Unknown action: dry-run" }`.
 
-**Mitigation**: The server should handle `"Unknown action"` responses gracefully and surface a clear error. Deployment sequence: update RESTlet first, then enable `dry-run` calls in the orchestrator.
+**Mitigation**: The server should handle `"Unknown action"` responses gracefully. Deployment sequence: update RESTlet first, then enable `dry-run` calls.
 
 ### Backward Compatibility
 
-New `dry-run` and `execute-approved` actions are additive `else if` branches. The existing `run` and `getscriptexecutionlogs` actions are completely unchanged. Any version of the server/CLI that only uses `run` will continue to work with the updated RESTlet. The updated RESTlet also works with old server/CLI versions (they never send the new actions).
+New `dry-run` and `execute-approved` actions are additive `else if` branches. Existing `run` and `getscriptexecutionlogs` actions are completely unchanged. Any version of the server/CLI that only uses `run` continues to work. The updated RESTlet also works with old clients.
 
 ### Duplicate RESTlet Sync
 
-The `helix-global-server` maintains a duplicate RESTlet at `netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js` deployed via SDF. This copy **must** be updated in lockstep with the `ns-gm` root copy. Currently these are manually maintained (identical content confirmed by inspection).
+`helix-global-server` maintains a duplicate RESTlet at `netsuite-setup/FileCabinet/SuiteScripts/ns_gm_restlet.js`. This copy must be updated identically when Proxy code is added. Currently manually maintained.
+
+### NS Role Permissions
+
+- **Sandbox**: FULL permissions — supports both dry-run (read + in-memory operations) and execute-approved (real writes).
+- **Production**: VIEW-only — supports dry-run (read operations work) but blocks execute-approved (saves would fail). Production role changes are a separate workstream.
 
 ## Performance Expectations
 
 | Operation | Expected Latency | Governance Cost |
 |-----------|-----------------|-----------------|
+| ES6 Proxy wrapping overhead | <1ms | 0 units (pure JS) |
 | `dry-run` with 1 record load + field capture | 2-5 seconds | ~20-50 units |
 | `dry-run` with 3 record loads + captures | 5-10 seconds | ~60-150 units |
-| Module proxy wrapping overhead | <10ms | 0 units (pure JS) |
-| `execute-approved` (identical to `run`) | 2-10 seconds | Depends on script |
 | `getFields()` call per record | <50ms | 0 units (in-memory) |
+| `getValue()`/`getText()` per field | <5ms each | 0 units (in-memory) |
+| `execute-approved` (identical to `run`) | 2-10 seconds | Depends on script |
 
-The governance budget of 5,000 units is sufficient for typical agent scripts that modify 1-5 records. Complex scripts with many record operations may need governance monitoring.
+ES6 Proxy has negligible runtime overhead — GraalJS optimizes Proxy trap dispatch. The governance budget of 5,000 units is sufficient for typical agent scripts that modify 1-5 records.
 
 ## Dependencies
 
 **No new dependencies for ns-gm.** The repo remains pure JS + Express:
 
-- RESTlet changes: Pure SuiteScript 2.1 using existing pre-loaded modules (no new `N/*` imports needed)
+- RESTlet changes: Pure SuiteScript 2.1 using `Proxy` (built-in ES6) and existing pre-loaded modules (no new `N/*` imports)
 - Express proxy changes: Follow existing `/run` endpoint pattern using existing `nsapi.REST.post()`
-- CLI changes: None required for the proxy mechanism itself (CLI remains a `/run` consumer)
+- CLI changes: None required for the proxy mechanism itself
 
 **Cross-repo dependency**: `helix-global-server` must update its duplicate RESTlet copy to match.
+
+**External dependency**: ES6 Proxy on GraalJS Java-backed objects — requires empirical runtime verification before full implementation.
 
 ## Deferred to Round 2
 
 | Item | Rationale |
 |------|-----------|
-| N/transaction.void() proxy | Focus on N/record for MVP; expand proxy surface iteratively |
+| `N/transaction.void()` Proxy wrapping | Focus on N/record for MVP; expand Proxy surface iteratively |
+| Other write-capable modules (`N/email`, `N/https`, `N/file`, `N/task`) | Side effects outside record mutation scope; different interception patterns needed |
 | Comprehensive sublist auto-discovery | Start with `getFields()` + common sublists + agent hints; full metadata mapping later |
-| record.transform() callback interception | Nested operations within transform callbacks are complex; document as known limitation |
-| BeforeSubmit safety net (Approach A as defense-in-depth) | Layer after Approach B is proven in production |
+| `record.transform()` callback deep interception | Nested operations within transform callbacks are complex; the returned Record IS Proxy-wrapped, but callback internals are not |
+| Companion beforeSubmit UES for Level 3 | Layer after ES6 Proxy approach is proven; provides defense-in-depth for post-validation state |
 | Governance budget alerting/metrics | Track governance in responses; alerting thresholds in Round 2 |
-| RESTlet version capability check | New RESTlet could report supported actions via a `capabilities` action; not needed for MVP |
+| RESTlet version capability check | New RESTlet could report supported actions via a `capabilities` action |
+| Monkey-patching fallback implementation | Only build if Proxy fails on Java-backed objects during runtime verification |
+| Client-side approval UI | Display intercepted record state for human approval — separate scope |
+| Orchestrator EXECUTE-mode branching | 0 EXECUTE tickets in production; build when needed |
 
 ## Summary Table
 
 | Dimension | Decision |
 |-----------|----------|
-| **Architecture** | Two-Phase RESTlet with Module Proxy (Approach B) |
-| **New RESTlet actions** | `dry-run` (proxied N/record) + `execute-approved` (real modules, token echo) |
-| **Proxy target** | N/record write methods: `save`, `submitFields`, `delete` |
-| **Proxy passthrough** | All read methods + all 23 other N/* modules |
-| **Substitution point** | `moduleParamValues[]` array (lines 115-125) — swap `record` entry before `safeExecute()` |
+| **Architecture** | ES6 Proxy Wrapping of Real N/record Module (Option B-prime) |
+| **Key improvement over prior** | Real module runs; Level 2 in-memory state captured (sourcing, dependent fields) |
+| **New RESTlet actions** | `dry-run` (Proxy-wrapped N/record) + `execute-approved` (real modules, token echo) |
+| **Proxy pattern** | Two-level: Module Proxy (wraps N/record) → Record Instance Proxy (wraps each Record) |
+| **Intercepted methods** | `save()`, `submitFields()`, `delete()` at write boundary |
+| **Passthrough** | All read methods + all 23 other N/* modules via `Reflect.get()` |
+| **Substitution point** | `moduleParamValues[]` array (lines 115-125) — wrap `record` entry with `new Proxy()` |
+| **Field capture** | `getFields()` + `getValue()`/`getText()` on real Record instance (Level 2) |
 | **Token validation** | Server-side only; RESTlet echoes token |
 | **Governance safety** | Abort at <200 remaining units; return partial result |
-| **Field discovery** | `getFields()` for body fields; agent hints + common sublists for sublists |
 | **New Express endpoints** | POST `/dry-run`, POST `/execute` |
 | **Backward compatibility** | Additive actions; existing `run`/`logs` unchanged |
-| **Dependencies** | None new; pure JS + existing modules |
+| **Dependencies** | None new; pure JS + built-in ES6 Proxy |
+| **Blocking unknown** | ES6 Proxy on GraalJS Java-backed N/* module objects — requires runtime test |
+| **Fallback** | Monkey-patching individual methods on shallow clone (deferred unless Proxy fails) |
 
 ## Open Risks
 
 | # | Risk | Severity | Mitigation |
 |---|------|----------|------------|
-| 1 | Proxy may miss edge-case N/record methods used by agent scripts | Medium | Start with core write methods; log unproxied method calls; expand iteratively |
-| 2 | Sublist field capture incomplete without known sublist IDs | Medium | Agent hints in context; common sublist enumeration; future metadata table |
-| 3 | RESTlet deployment coordination — dry-run called before RESTlet updated | Medium | Handle "Unknown action" gracefully; deploy RESTlet before enabling server dry-run calls |
-| 4 | 5,000 governance units may be tight for complex scripts with many record operations + field enumeration | Low | Governance safety threshold at 200; return partial results |
-| 5 | `record.create()` placeholder ID may confuse downstream code that checks record IDs | Low | Use negative IDs to avoid collision; document in change summary |
-| 6 | Production NS role is VIEW-only — execute-approved in production needs role changes | Medium | Sandbox-first (FULL permissions); production role review is a separate workstream |
-| 7 | NetSuite side-effects (workflows, UES, formula recalcs) not visible in dry-run | Low | Document as known limitation; dry-run captures direct field changes only |
+| 1 | **ES6 Proxy may not work on GraalJS Java-backed N/* module objects** — this is a Java-to-JS interop edge case that could cause the `get` trap to not fire or to throw | **High** | Run a minimal Proxy verification test via ns-gm CLI BEFORE building full handler. Fallback to monkey-patching if needed. |
+| 2 | Record instance methods may be on the prototype rather than own properties, affecting whether Level 2 Proxy `get` trap correctly intercepts `.save()` | Medium | Proxy `get` trap fires for all property access regardless of own vs prototype. `Reflect.get` handles prototype chain correctly. Low actual risk. |
+| 3 | N/* module objects may be frozen/sealed by GraalJS host interop | Low | Does not affect Proxy wrapping (Proxy creates a new object; original is untouched). Only affects monkey-patching fallback. |
+| 4 | Sublist field capture incomplete without known sublist IDs | Medium | Agent hints in context; common sublist enumeration; future metadata table |
+| 5 | RESTlet deployment coordination — dry-run called before RESTlet updated | Medium | Handle "Unknown action" gracefully; deploy RESTlet first |
+| 6 | `record.create()` placeholder ID may confuse downstream code that checks record IDs | Low | Use negative IDs; document in change summary |
+| 7 | Production NS role is VIEW-only — execute-approved in production needs role changes | Medium | Sandbox-first (FULL permissions); production role review separate |
+| 8 | Some N/record methods may return non-Proxied internal objects (e.g., `getSubrecord()`) that bypass interception | Low | Document as known limitation; expand Proxy coverage iteratively |
 
 ## APL Statement Reference
 
@@ -230,18 +318,19 @@ See `tech-research/apl.json` for structured questions, answers, and evidence.
 
 | Artifact | Why Used | Key Takeaway |
 |----------|----------|--------------|
-| `ticket.md` (ns-gm) | Research scope — three questions about proxy module feasibility | Confirmed: proxy modules can intercept real operations, not just user input |
-| `diagnosis/diagnosis-statement.md` (ns-gm) | Root cause analysis of module injection mechanism | Lines 115-125 + 166 are the substitution point; read-through / write-intercept confirmed |
-| `diagnosis/apl.json` (ns-gm) | Structured Q&A with code-line evidence | All six research questions answered with evidence; two prior tickets validated approach |
-| `product/product.md` (ns-gm) | MVP scope, use cases, design principles | Dry-run preview + approved execution; transparency principle; additive-only changes |
-| `scout/scout-summary.md` (ns-gm) | Architecture analysis of RESTlet module injection | 24 pre-loaded modules; `new Function()` pattern; prior research references |
-| `scout/reference-map.json` (ns-gm) | File inventory, facts, unknowns | Key files; sublist discovery unknown; governance budget unknown |
-| `ns_gm_restlet.js` (direct read) | Verify module injection pattern and action dispatcher | Confirmed: lines 23-37 action routing, 71-96 moduleMap, 115-125 array build, 163-169 safeExecute |
-| `server/app.js` (direct read) | Endpoint pattern for new dry-run/execute endpoints | POST `/run` pattern (lines 35-86): validate → `nsapi.REST.post()` → structured response |
-| `server/auth.js` (direct read) | OAuth 2.0 M2M implementation details | Token caching, 401 retry, `REST.post()` interface — all reusable for new actions |
-| Prior tech-research (cmnqr8lkk) | Architecture decision on proxy approach | Approach B chosen over 5 alternatives; detailed proxy spec; HMAC simplified to server-side |
-| Prior diagnosis (cmnrx64kr) | Proxy viability validation | Confirmed viable; before/after capture spec; LOW regression risk |
-| `diagnosis/diagnosis-statement.md` (helix-global-server) | Server role in proxy modules | Duplicate RESTlet sync; credential chain reusable; orchestrator EXECUTE-mode gap |
-| `product/product.md` (helix-global-server) | Server-side scope | RESTlet sync, orchestrator branching, credential reuse, change summary persistence |
-| `repo-guidance.json` | Repo intent classification | ns-gm = target (primary), helix-global-server = target (secondary) |
-| SuiteScript 2.0 Typings (Context7) | Verify N/record API surface | Confirmed `record.load()`, `record.getFields()`, `record.save()` API patterns |
+| `ticket.md` (ns-gm) | Research scope — user's refined question about deeper interception | User wants real module preserved, intercept at write boundary |
+| User continuation context | Exact user ask driving architecture evolution | "Keep the NetSuite module, not our own version, all the code that actually runs, but just hijack it at the end" |
+| `diagnosis/diagnosis-statement.md` (ns-gm) | ES6 Proxy wrapping analysis, three interception levels | Proxy confirmed available in SuiteScript 2.1 (GraalJS); Level 2 capture validated; strict improvement over module replacement |
+| `diagnosis/apl.json` (ns-gm) | Structured Q&A on Proxy feasibility with evidence | Five questions answered: Proxy wrapping works, Level 2 captured without side effects, no clean Level 3 mechanism |
+| `product/product.md` (ns-gm) | MVP scope, use cases, success criteria | ES6 Proxy wrapping features; runtime validation required; dry-run + execute-approved flow |
+| `scout/scout-summary.md` (ns-gm) | Three interception depth levels; architectural boundaries | N/* modules make JVM calls (no HTTP transport to intercept); beforeSubmit UES is only Level 3 native mechanism |
+| `scout/reference-map.json` (ns-gm) | File inventory, facts, unknowns | 24 pre-loaded modules; Proxy availability unknown at scout time (now resolved); method wrapping feasibility unknown |
+| `ns_gm_restlet.js` (direct read, full file) | Verify module injection pattern, action dispatcher, execution model | Lines 7-16 AMD define; 71-96 moduleMap; 115-125 array build; 163-169 safeExecute; confirmed substitution point |
+| `server/app.js` (direct read) | Express endpoint pattern for new dry-run/execute endpoints | POST `/run` pattern (lines 35-86): validate → `nsapi.REST.post()` → structured response |
+| `server/auth.js` (direct read, lines 172-182) | OAuth 2.0 M2M `postToRestlet()` — reusable for new actions | Bearer token auth, 30s timeout, JSON content-type — all reusable |
+| `diagnosis/diagnosis-statement.md` (helix-global-server) | Server role assessment | Server unchanged by Proxy approach; duplicate RESTlet sync required; credentials reusable |
+| `product/product.md` (helix-global-server) | Server-side MVP scope | RESTlet sync only; no server logic changes for Proxy mechanism |
+| `repo-guidance.json` | Repo intent classification | ns-gm = primary target, helix-global-server = secondary (file sync only) |
+| Runtime inspection (helix-global-server DB) | Verify credential infrastructure | 10 NsGmCredential records across 5 organizations confirmed |
+| Web search (via diagnosis): SuiteScript 2.1 GraalJS | ES6 Proxy availability confirmation | GraalJS supports ES2023; Marty Y. Chang article confirms Proxy usage in SuiteScript 2.1 |
+| Prior tech-research (this run, ns-gm) | Baseline from prior iteration | Approach B (module replacement) established; this update evolves to ES6 Proxy wrapping |
