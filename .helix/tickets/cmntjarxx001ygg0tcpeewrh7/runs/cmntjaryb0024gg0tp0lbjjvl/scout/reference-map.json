@@ -1,0 +1,36 @@
+{
+  "problem": "Research ticket asking why a prior run's verification produced verification_broken. CHK-06 required runtime NetSuite SuiteQL access to verify 7 orphaned records. ns-gm is the CLI tool that provides NetSuite connectivity but has no repositoryInspectionCredential configured in the Helix system, so the runtime inspection manifest did not include it.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "The NetSuite RESTlet deployed to NetSuite that supports SuiteQL query execution — this is the capability that CHK-06's remediation option (3) references ('deploy corrected scripts to a NetSuite sandbox')."
+    },
+    {
+      "path": "src/commands/run.js",
+      "why": "CLI command for executing arbitrary SuiteScript code against NetSuite — could be used for manual verification of orphaned records."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Local Express proxy that routes CLI commands to the NetSuite RESTlet via OAuth 2.0."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M authentication module — the credential flow that would need to be configured for automated runtime inspection."
+    }
+  ],
+  "facts": [
+    "ns-gm is a CLI + local proxy for executing SuiteScript 2.1 code against NetSuite via OAuth 2.0 Client Credentials (M2M).",
+    "The RESTlet (ns_gm_restlet.js) supports two actions: 'run' (execute arbitrary SuiteScript) and 'getscriptexecutionlogs' (retrieve logs with SuiteQL).",
+    "ns-gm credentials are alias-based, stored at ~/.ns-gm/credentials.json.",
+    "No repositoryInspectionCredential records exist for ns-gm in the Helix system — it does not appear in /tmp/helix-inspect/manifest.json.",
+    "The server has NsGmCredential model in Prisma schema and ns-gm-credentials.ts for orchestrator use, but this is separate from the repositoryInspectionCredential system.",
+    "Remediation option (2) from the screenshot suggests providing a runtime inspection manifest with SuiteQL support — this would require extending the inspection system.",
+    "Remediation option (1) suggests dev setup configuration with NetSuite account ID and token-based auth — this would use the existing dev setup mechanism.",
+    "ns-gm has no ORM, no migrations, no build step. Quality gate: eslint + prettier only."
+  ],
+  "unknowns": [
+    "Whether the NsGmCredential model in helix-global-server could be leveraged to auto-configure inspection credentials for ns-gm.",
+    "What specific SuiteScript corrections were being verified against the 7 orphaned records.",
+    "Whether a NETSUITE inspection type could be added to the repositoryInspectionCredential system."
+  ]
+}
