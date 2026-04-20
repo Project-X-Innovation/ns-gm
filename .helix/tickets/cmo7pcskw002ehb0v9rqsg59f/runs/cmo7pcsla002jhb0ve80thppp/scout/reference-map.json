@@ -1,0 +1,70 @@
+{
+  "problem": "RSH-286 asks whether ns-gm can surface missing IDs caused by SDF 'account specific value' replacement during object exports. The ticket also asks about object definitions being fetched/updated via NSGM during ticket flows. This maps ns-gm's current capabilities relative to these questions.",
+  "files": [
+    {
+      "path": "ns_gm_restlet.js",
+      "why": "NetSuite RESTlet supporting run, getscriptexecutionlogs, getScriptId actions. The 'run' action can execute arbitrary SuiteScript 2.1 code with 23 injected modules including N/record, N/search, N/workflow. This is the mechanism through which ns-gm could potentially query real IDs to resolve SDF account-specific value placeholders."
+    },
+    {
+      "path": "server/app.js",
+      "why": "Local proxy with /health, /run, /logs endpoints. /run accepts code + optional modules array. No deploy or object-specific endpoints."
+    },
+    {
+      "path": "server/auth.js",
+      "why": "OAuth 2.0 M2M authentication with JWT client assertion (PS256). Token caching with 60s refresh buffer. REST.post interface used by all proxy endpoints."
+    },
+    {
+      "path": "src/cli.js",
+      "why": "CLI command registration: init, run, env, logs, stop, setup, setup:ci, help. No deploy, object, or SDF commands exist."
+    },
+    {
+      "path": "src/utils/profileStore.js",
+      "why": "Credential/profile management at ~/.ns-gm/credentials.json. Alias-based profiles with accountId, clientId, certificateId, privateKeyPath, restletUrl, scope."
+    },
+    {
+      "path": "Blueprints/implementation-actual.md",
+      "why": "Implementation history (1952 lines, 21 completed steps). Documents the full CLI + proxy + auth implementation. No deployment features were added."
+    }
+  ],
+  "facts": [
+    {
+      "claim": "ns-gm CLI has 8 commands, none related to deployment or object management",
+      "evidence": "src/cli.js lines 1-93: init, run, env, logs, stop, setup, setup:ci, help commands. No 'deploy', 'object', 'import', or 'sdf' commands."
+    },
+    {
+      "claim": "RESTlet supports arbitrary SuiteScript execution with N/record, N/search, N/workflow modules",
+      "evidence": "ns_gm_restlet.js line 11: modules include record, search, workflow, query, config, runtime, format, and 16 others. The 'run' action (lines 26-154) executes user-provided code with these modules injected."
+    },
+    {
+      "claim": "ns-gm could theoretically query real record IDs at runtime to resolve account-specific values",
+      "evidence": "RESTlet injects N/record and N/search modules. SuiteScript can use record.load() or search.create() to look up internal IDs, names, and references that SDF replaces with 'account specific value' during export."
+    },
+    {
+      "claim": "No ns-gm capability for SDF operations (list/import/export objects)",
+      "evidence": "Grep for 'sdf', 'object:list', 'object:import', 'deploy', 'export' across the repo returns zero results in source code."
+    },
+    {
+      "claim": "RESTlet tracks governance units",
+      "evidence": "ns_gm_restlet.js lines 128-140: Reports initial, remaining, and used governance units per execution. Relevant for understanding limits on ID resolution queries."
+    }
+  ],
+  "unknowns": [
+    {
+      "question": "Can ns-gm SuiteScript execution reliably resolve all types of SDF account-specific values?",
+      "impact": "SDF replaces references like record IDs, script IDs, and role IDs with 'account specific value' placeholders. While N/record and N/search can query records, the exact fields/types affected and whether SuiteScript can always resolve them is unknown without testing."
+    },
+    {
+      "question": "What governance cost would batch ID resolution have?",
+      "impact": "RESTlet has governance limits per execution. Resolving many account-specific values in a single deployment might require multiple RESTlet calls. The per-call overhead (auth, HTTP) and governance consumption need measurement."
+    },
+    {
+      "question": "Does ns-gm need new CLI commands for this ticket, or is the existing 'run' capability sufficient?",
+      "impact": "The helix-global-server orchestrator already uses ns-gm setup:ci for runtime checks. If ID resolution is needed, it could invoke ns-gm run --code with appropriate SuiteScript, or a new dedicated command could be added."
+    }
+  ],
+  "qualityGates": {
+    "start": "npm start or npm dev (node src/cli.js)",
+    "test": "none configured",
+    "lint": "none configured"
+  }
+}
